@@ -78,7 +78,7 @@ jobs:
         run: |
           rm -rf colin-app-ios
 
-          toolchain create colin-app .
+          toolchain create colin-app "$GITHUB_WORKSPACE" .
 
       # =========================
       # 8. 检查工程是否生成
