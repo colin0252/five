@@ -1,55 +1,43 @@
-name: Build 五行排盘 iOS IPA
+name: Build iOS IPA
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
-  build-ios:
-    runs-on: macos-latest
+  build:
+    runs-on: macos-14
 
     steps:
-      # =========================
-      # 1. 获取代码
-      # =========================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # =========================
-      # 2. Python
-      # =========================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # =========================
-      # 3. macOS 构建依赖
-      # =========================
-      - name: Install system dependencies
+      - name: Install build dependencies
         run: |
           brew update
           brew install autoconf automake libtool pkg-config
           brew link libtool --force
 
-      # =========================
-      # 4. Python 构建依赖
-      # =========================
-      - name: Install Python dependencies
+      - name: Upgrade Python tools
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "Cython<3.1"
 
-          pip install "Cython<3.1"
+      - name: Install Kivy
+        run: |
+          python -m pip install "kivy>=2.3.0,<2.4.0"
 
-          pip install "kivy>=2.3.0,<2.4.0"
+      - name: Install kivy-ios
+        run: |
+          python -m pip install "kivy-ios"
 
-          pip install "kivy-ios"
-
-      # =========================
-      # 5. 检查环境
-      # =========================
       - name: Check build environment
         run: |
           python --version
@@ -58,52 +46,22 @@ jobs:
           automake --version
           toolchain --help
 
-      # =========================
-      # 6. 编译 Python + Kivy
-      # =========================
       - name: Build Python and Kivy
         run: |
-          toolchain build python3 kivy
+          toolchain build python3
+          toolchain build kivy
 
-      # =========================
-      # 7. 创建 Xcode 工程
-      #
-      # 官方格式：
-      # toolchain create <title> <app_directory>
-      #
-      # 当前仓库根目录就是 App 源代码目录，
-      # 里面必须有 main.py
-      # =========================
       - name: Create iOS project
         run: |
           rm -rf colin-app-ios
+          toolchain create colin-app "$GITHUB_WORKSPACE"
 
-          toolchain create colin-app "$GITHUB_WORKSPACE" .
-
-      # =========================
-      # 8. 检查工程是否生成
-      # =========================
-      - name: Check generated project
-        run: |
           test -d colin-app-ios
           test -f colin-app-ios/colin-app.xcodeproj/project.pbxproj
 
-          echo "Generated project:"
-          find colin-app-ios -maxdepth 2 -type f | head -50
-
-      # =========================
-      # 9. 构建 iOS App
-      #
-      # 显示名称：五行排盘
-      # 内部名称：colin-app
-      # Bundle ID：com.colin.wuxing
-      #
-      # 暂时关闭代码签名，生成 unsigned IPA。
-      # =========================
       - name: Build iOS app
+        working-directory: colin-app-ios
         run: |
-          cd colin-app-ios
-
           xcodebuild \
             -project colin-app.xcodeproj \
             -scheme colin-app \
@@ -114,49 +72,25 @@ jobs:
             INFOPLIST_KEY_CFBundleDisplayName="五行排盘" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build \
             CONFIGURATION_BUILD_DIR="$PWD/build"
 
-      # =========================
-      # 10. 检查 App
-      # =========================
       - name: Check app
         run: |
           test -d colin-app-ios/build/colin-app.app
-
-          echo "App generated successfully:"
+          echo "iOS app build succeeded:"
           ls -lah colin-app-ios/build/colin-app.app
 
-      # =========================
-      # 11. 打包 IPA
-      # =========================
       - name: Package IPA
         run: |
           cd colin-app-ios
-
           rm -rf Payload
-
-          mkdir -p Payload
-
-          cp -R \
-            build/colin-app.app \
-            Payload/colin-app.app
-
-          zip -qry \
-            colin-app-unsigned.ipa \
-            Payload
-
-          rm -rf Payload
-
-          echo "IPA generated:"
+          mkdir Payload
+          cp -R build/colin-app.app Payload/
+          zip -r colin-app-unsigned.ipa Payload
           ls -lh colin-app-unsigned.ipa
 
-      # =========================
-      # 12. 上传 IPA
-      # =========================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: 五行排盘-IPA
           path: colin-app-ios/colin-app-unsigned.ipa
-          if-no-files-found: error
