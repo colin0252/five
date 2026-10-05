@@ -19,11 +19,24 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build tools
+      - name: Install system dependencies
+        run: |
+          brew update
+          brew install autoconf automake
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
+          pip install cython
           pip install "kivy>=2.3.0,<2.4.0"
           pip install "kivy-ios>=2024.1.1"
+
+      - name: Check toolchain
+        run: |
+          which autoconf
+          which automake
+          cython --version
+          toolchain --help
 
       - name: Build Python and Kivy
         run: |
