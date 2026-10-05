@@ -25,17 +25,12 @@ from .paipan import build_chart
 # 中文字体
 # =========================================================
 
-FONT_PATH = resource_find(
-    "fonts/NotoSansSC-Regular.otf"
-)
+# 暂时关闭外部字体加载，排查 iOS 闪退问题
+
+FONT_PATH = None
 
 
 def font_args():
-    if FONT_PATH:
-        return {
-            "font_name": FONT_PATH
-        }
-
     return {}
 
 
