@@ -1,4 +1,4 @@
-name: Build iOS IPA
+name: Build 五行排盘 iOS IPA
 
 on:
   workflow_dispatch:
@@ -19,56 +19,53 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python dependencies
+      - name: Install build tools
         run: |
-          python -m pip install --upgrade pip
-          pip install kivy
+          python -m pip install --upgrade pip setuptools wheel
+          pip install "kivy>=2.3.0,<2.4.0"
+          pip install "kivy-ios>=2024.1.1"
 
-      - name: Install kivy-ios
-        run: |
-          pip install kivy-ios
-
-      - name: Build Python recipes
+      - name: Build Python and Kivy
         run: |
           toolchain build python3 kivy
 
       - name: Create iOS project
         run: |
-          toolchain create MyPythonApp \
-            org.example.mypythonapp \
+          rm -rf colin-app
+
+          toolchain create colin-app com.colin.wuxing \
             --add-deploydir .
-          
-      - name: Build iOS project
+
+      - name: Build iOS app
         run: |
-          cd MyPythonApp
+          cd colin-app
+
           xcodebuild \
-            -project MyPythonApp.xcodeproj \
-            -scheme MyPythonApp \
+            -project colin-app.xcodeproj \
+            -scheme colin-app \
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build \
-            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build"
+            CONFIGURATION_BUILD_DIR="$PWD/build"
 
       - name: Package IPA
         run: |
+          APP_PATH="colin-app/build/colin-app.app"
+
+          test -d "$APP_PATH"
+
           mkdir -p Payload
+          cp -R "$APP_PATH" Payload/colin-app.app
 
-          APP_PATH=$(find build -maxdepth 2 -name "*.app" -type d | head -n 1)
+          zip -qry colin-app-unsigned.ipa Payload
 
-          if [ -z "$APP_PATH" ]; then
-            echo "没有找到 .app"
-            exit 1
-          fi
-
-          cp -R "$APP_PATH" Payload/
-
-          zip -r MyPythonApp-unsigned.ipa Payload
+          rm -rf Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MyPythonApp-IPA
-          path: MyPythonApp-unsigned.ipa
-:::
+          name: 五行排盘-IPA
+          path: colin-app/colin-app-unsigned.ipa
+          if-no-files-found: error
