@@ -10,6 +10,9 @@ jobs:
   build:
     runs-on: macos-14
 
+    env:
+      KIVYIOS_ROOT: ${{ runner.temp }}/kivy-ios
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +22,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build dependencies
+      - name: Install system dependencies
         run: |
           brew update
           brew install autoconf automake libtool pkg-config
@@ -36,20 +39,68 @@ jobs:
 
       - name: Install kivy-ios
         run: |
-          python -m pip install "kivy-ios"
+          python -m pip install --upgrade kivy-ios
 
-      - name: Check build environment
+      - name: Check environment
         run: |
+          echo "=== Python ==="
           python --version
+
+          echo "=== Pip ==="
+          python -m pip --version
+
+          echo "=== Cython ==="
           cython --version
-          autoconf --version
-          automake --version
+
+          echo "=== kivy-ios ==="
+          python -m pip show kivy-ios
+
+          echo "=== Toolchain ==="
+          which toolchain
           toolchain --help
 
-      - name: Build Python and Kivy
+          echo "=== KIVYIOS_ROOT ==="
+          echo "$KIVYIOS_ROOT"
+
+      - name: Prepare kivy-ios workspace
         run: |
+          rm -rf "$KIVYIOS_ROOT"
+          mkdir -p "$KIVYIOS_ROOT"
+
+          echo "Kivy-iOS workspace:"
+          ls -la "$KIVYIOS_ROOT"
+
+      - name: Build Python3 recipe
+        run: |
+          echo "=== Building python3 ==="
+
           toolchain build python3
+
+          echo "=== Python3 build finished ==="
+
+          if [ -d "$KIVYIOS_ROOT" ]; then
+            find "$KIVYIOS_ROOT" -maxdepth 5 -type f | head -200 || true
+          fi
+
+      - name: Verify Python3 recipe
+        run: |
+          echo "=== Checking Python3 recipe ==="
+
+          toolchain recipes
+
+          echo "=== Searching for Python build output ==="
+
+          find "$KIVYIOS_ROOT" -maxdepth 6 \
+            \( -iname "*python*" -o -iname "*recipe*" \) \
+            -print 2>/dev/null | head -300 || true
+
+      - name: Build Kivy recipe
+        run: |
+          echo "=== Building Kivy ==="
+
           toolchain build kivy
+
+          echo "=== Kivy build finished ==="
 
       - name: Create iOS project
         run: |
@@ -59,17 +110,30 @@ jobs:
 
           cd "$RUNNER_TEMP"
 
+          echo "=== Creating iOS project ==="
+          echo "Project directory: $IOS_PROJECT_DIR"
+          echo "Kivy-iOS root: $KIVYIOS_ROOT"
+
           toolchain create colin-app "$GITHUB_WORKSPACE"
+
+          echo "=== Checking generated project ==="
 
           test -d "$IOS_PROJECT_DIR"
           test -f "$IOS_PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
+
+          ls -lah "$IOS_PROJECT_DIR"
+          ls -lah "$IOS_PROJECT_DIR/colin-app.xcodeproj"
 
       - name: Build iOS app
         run: |
           export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
 
+          cd "$IOS_PROJECT_DIR"
+
+          echo "=== Building Xcode project ==="
+
           xcodebuild \
-            -project "$IOS_PROJECT_DIR/colin-app.xcodeproj" \
+            -project colin-app.xcodeproj \
             -scheme colin-app \
             -configuration Release \
             -sdk iphoneos \
@@ -84,6 +148,8 @@ jobs:
       - name: Check app
         run: |
           export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
+
+          echo "=== Checking .app ==="
 
           test -d "$IOS_PROJECT_DIR/build/colin-app.app"
 
@@ -103,6 +169,7 @@ jobs:
 
           zip -r colin-app-unsigned.ipa Payload
 
+          echo "=== IPA created ==="
           ls -lh colin-app-unsigned.ipa
 
       - name: Upload IPA
