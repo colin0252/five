@@ -168,8 +168,19 @@ jobs:
           echo "=== IPA created ==="
           ls -lh colin-app-unsigned.ipa
 
+      - name: Copy IPA to workspace
+        run: |
+          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+
+          cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
+             "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
+
+          echo "=== IPA copied ==="
+          ls -lh "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: 五行排盘-IPA
-          path: ${{ github.workspace }}/../colin-app-unsigned.ipa
+          path: ${{ github.workspace }}/colin-app-unsigned.ipa
+          if-no-files-found: error
