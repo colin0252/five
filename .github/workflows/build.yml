@@ -53,44 +53,60 @@ jobs:
 
       - name: Create iOS project
         run: |
-          rm -rf colin-app-ios
+          export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
+
+          rm -rf "$IOS_PROJECT_DIR"
+
+          cd "$RUNNER_TEMP"
+
           toolchain create colin-app "$GITHUB_WORKSPACE"
 
-          test -d colin-app-ios
-          test -f colin-app-ios/colin-app.xcodeproj/project.pbxproj
+          test -d "$IOS_PROJECT_DIR"
+          test -f "$IOS_PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
 
       - name: Build iOS app
-        working-directory: colin-app-ios
         run: |
+          export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
+
           xcodebuild \
-            -project colin-app.xcodeproj \
+            -project "$IOS_PROJECT_DIR/colin-app.xcodeproj" \
             -scheme colin-app \
             -configuration Release \
             -sdk iphoneos \
             PRODUCT_NAME=colin-app \
             PRODUCT_BUNDLE_IDENTIFIER=com.colin.wuxing \
             INFOPLIST_KEY_CFBundleDisplayName="五行排盘" \
+            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CONFIGURATION_BUILD_DIR="$PWD/build"
+            CONFIGURATION_BUILD_DIR="$IOS_PROJECT_DIR/build"
 
       - name: Check app
         run: |
-          test -d colin-app-ios/build/colin-app.app
+          export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
+
+          test -d "$IOS_PROJECT_DIR/build/colin-app.app"
+
           echo "iOS app build succeeded:"
-          ls -lah colin-app-ios/build/colin-app.app
+          ls -lah "$IOS_PROJECT_DIR/build/colin-app.app"
 
       - name: Package IPA
         run: |
-          cd colin-app-ios
+          export IOS_PROJECT_DIR="$RUNNER_TEMP/colin-app-ios"
+
+          cd "$IOS_PROJECT_DIR"
+
           rm -rf Payload
           mkdir Payload
+
           cp -R build/colin-app.app Payload/
+
           zip -r colin-app-unsigned.ipa Payload
+
           ls -lh colin-app-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: 五行排盘-IPA
-          path: colin-app-ios/colin-app-unsigned.ipa
+          path: ${{ runner.temp }}/colin-app-ios/colin-app-unsigned.ipa
