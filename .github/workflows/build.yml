@@ -1,0 +1,74 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install kivy
+
+      - name: Install kivy-ios
+        run: |
+          pip install kivy-ios
+
+      - name: Build Python recipes
+        run: |
+          toolchain build python3 kivy
+
+      - name: Create iOS project
+        run: |
+          toolchain create MyPythonApp \
+            org.example.mypythonapp \
+            --add-deploydir .
+          
+      - name: Build iOS project
+        run: |
+          cd MyPythonApp
+          xcodebuild \
+            -project MyPythonApp.xcodeproj \
+            -scheme MyPythonApp \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build \
+            CONFIGURATION_BUILD_DIR="$GITHUB_WORKSPACE/build"
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+
+          APP_PATH=$(find build -maxdepth 2 -name "*.app" -type d | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "没有找到 .app"
+            exit 1
+          fi
+
+          cp -R "$APP_PATH" Payload/
+
+          zip -r MyPythonApp-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyPythonApp-IPA
+          path: MyPythonApp-unsigned.ipa
+:::
