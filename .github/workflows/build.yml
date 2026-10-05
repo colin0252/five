@@ -10,6 +10,10 @@ jobs:
   build:
     runs-on: macos-14
 
+    env:
+      KIVYIOS_BUILD_DIR: ${{ runner.temp }}/kivy-ios
+      IOS_PROJECT_DIR: ${{ runner.temp }}/kivy-ios/colin-app-ios
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,35 +41,70 @@ jobs:
           python --version
           python -m pip --version
           cython --version
+          python -m pip show kivy-ios
           which toolchain
           toolchain --help
 
-      - name: Build Python
+      - name: Prepare kivy-ios build directory
         run: |
+          rm -rf "$KIVYIOS_BUILD_DIR"
+          mkdir -p "$KIVYIOS_BUILD_DIR"
+
+          echo "Kivy-iOS build directory:"
+          echo "$KIVYIOS_BUILD_DIR"
+
+      - name: Build Python3 recipe
+        working-directory: ${{ runner.temp }}/kivy-ios
+        run: |
+          echo "=== Current directory ==="
+          pwd
+
+          echo "=== Build python3 ==="
           toolchain build python3
 
-      - name: Check Python recipe
+      - name: Check Python3 recipe
+        working-directory: ${{ runner.temp }}/kivy-ios
         run: |
-          toolchain recipes
+          echo "=== Current directory ==="
+          pwd
 
-      - name: Build Kivy
+          echo "=== Recipe status ==="
+          toolchain status
+
+      - name: Build Kivy recipe
+        working-directory: ${{ runner.temp }}/kivy-ios
         run: |
+          echo "=== Current directory ==="
+          pwd
+
+          echo "=== Build Kivy ==="
           toolchain build kivy
 
       - name: Create iOS project
+        working-directory: ${{ runner.temp }}/kivy-ios
         run: |
-          rm -rf "$RUNNER_TEMP/colin-app-ios"
+          echo "=== Current directory ==="
+          pwd
 
-          cd "$RUNNER_TEMP"
+          echo "=== Creating iOS project ==="
+
+          rm -rf "$IOS_PROJECT_DIR"
 
           toolchain create colin-app "$GITHUB_WORKSPACE"
 
-          test -d "$RUNNER_TEMP/colin-app-ios"
-          test -f "$RUNNER_TEMP/colin-app-ios/colin-app.xcodeproj/project.pbxproj"
+          echo "=== Checking generated project ==="
+
+          test -d "$IOS_PROJECT_DIR"
+          test -f "$IOS_PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
+
+          echo "Project created:"
+          ls -lah "$IOS_PROJECT_DIR"
 
       - name: Build iOS app
-        working-directory: ${{ runner.temp }}/colin-app-ios
+        working-directory: ${{ runner.temp }}/kivy-ios/colin-app-ios
         run: |
+          echo "=== Building Xcode project ==="
+
           xcodebuild \
             -project colin-app.xcodeproj \
             -scheme colin-app \
@@ -77,16 +116,20 @@ jobs:
             IPHONEOS_DEPLOYMENT_TARGET=12.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/colin-app-ios/build"
+            CONFIGURATION_BUILD_DIR="$IOS_PROJECT_DIR/build"
 
       - name: Check app
         run: |
-          test -d "$RUNNER_TEMP/colin-app-ios/build/colin-app.app"
-          ls -lah "$RUNNER_TEMP/colin-app-ios/build/colin-app.app"
+          echo "=== Checking app ==="
+
+          test -d "$IOS_PROJECT_DIR/build/colin-app.app"
+
+          ls -lah "$IOS_PROJECT_DIR/build/colin-app.app"
 
       - name: Package IPA
+        working-directory: ${{ runner.temp }}/kivy-ios/colin-app-ios
         run: |
-          cd "$RUNNER_TEMP/colin-app-ios"
+          echo "=== Packaging IPA ==="
 
           rm -rf Payload
           mkdir Payload
@@ -95,10 +138,11 @@ jobs:
 
           zip -r colin-app-unsigned.ipa Payload
 
+          echo "=== IPA created ==="
           ls -lh colin-app-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: 五行排盘-IPA
-          path: ${{ runner.temp }}/colin-app-ios/colin-app-unsigned.ipa
+          path: ${{ runner.temp }}/kivy-ios/colin-app-ios/colin-app-unsigned.ipa
