@@ -1,4 +1,6 @@
+
 from datetime import datetime
+from threading import Thread
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -22,15 +24,15 @@ from .paipan import build_chart
 
 
 # =========================================================
-# 中文字体
+# 中文字体：字体文件存在时使用，不存在时使用系统默认字体
 # =========================================================
 
-# 暂时关闭外部字体加载，排查 iOS 闪退问题
-
-FONT_PATH = None
+FONT_PATH = resource_find("fonts/NotoSansSC-Regular.otf")
 
 
 def font_args():
+    if FONT_PATH:
+        return {"font_name": FONT_PATH}
     return {}
 
 
@@ -38,22 +40,11 @@ def font_args():
 # 通用控件
 # =========================================================
 
-def make_label(
-    text="",
-    size=16,
-    bold=False,
-    **kwargs
-):
+def make_label(text="", size=16, bold=False, **kwargs):
     options = font_args()
 
-    # 如果外部没有指定颜色，使用默认颜色
     if "color" not in kwargs:
-        kwargs["color"] = (
-            0.12,
-            0.12,
-            0.12,
-            1
-        )
+        kwargs["color"] = (0.12, 0.12, 0.12, 1)
 
     return Label(
         text=text,
@@ -64,29 +55,44 @@ def make_label(
     )
 
 
-def make_button(
-    text,
-    height=48
-):
-    options = font_args()
-
+def make_button(text, height=48):
     return Button(
         text=text,
         font_size=dp(16),
         size_hint_y=None,
         height=dp(height),
-        **options
+        **font_args()
     )
+
+
+def make_scroll_label(size=14):
+    label = make_label(
+        "",
+        size=size,
+        halign="left",
+        valign="top",
+        size_hint_y=None,
+        padding=(dp(8), dp(8)),
+    )
+
+    label.bind(
+        texture_size=lambda obj, value:
+        setattr(obj, "height", value[1] + dp(24))
+    )
+
+    label.bind(
+        width=lambda obj, value:
+        setattr(obj, "text_size", (max(1, value - dp(16)), None))
+    )
+
+    return label
 
 
 # =========================================================
 # 排盘结果转换为文字
 # =========================================================
 
-def chart_to_text(
-    chart,
-    title=None
-):
+def chart_to_text(chart, title=None):
     pillars = [
         chart.year,
         chart.month,
@@ -94,18 +100,8 @@ def chart_to_text(
         chart.hour,
     ]
 
-    lines = []
-
-    if title:
-        lines.append(
-            f"【{title}】"
-        )
-    else:
-        lines.append(
-            "【五行排盘】"
-        )
-
-    lines += [
+    lines = [
+        f"【{title or '五行排盘'}】",
         f"出生：{chart.birth:%Y-%m-%d %H:%M}",
         f"经度：{chart.longitude:.4f}°",
         f"真太阳时：{chart.true_solar:%Y-%m-%d %H:%M}",
@@ -136,12 +132,11 @@ def chart_to_text(
 
     for pillar in pillars:
         lines.append(
-            f"{pillar.name} "
-            f"{pillar.ganzhi}："
+            f"{pillar.name} {pillar.ganzhi}："
             f"{'、'.join(pillar.hidden)}"
         )
 
-    lines += [
+    lines.extend([
         "",
         f"【胎元】{chart.fetal}",
         f"【命宫】{chart.life_palace}（辅助取象）",
@@ -149,40 +144,31 @@ def chart_to_text(
         "【五行计数】",
         "、".join(
             f"{key}{value}"
-            for key, value
-            in chart.wuxing.items()
+            for key, value in chart.wuxing.items()
         ),
         "",
         "【大运】",
-    ]
+    ])
 
     for item in chart.dayun:
         lines.append(
-            f"{item['序']}. "
-            f"{item['干支']} "
-            f"约{item['起运岁']}岁起"
-            f"（{item['顺逆']}）"
+            f"{item['序']}. {item['干支']} "
+            f"约{item['起运岁']}岁起（{item['顺逆']}）"
         )
 
     if chart.warnings:
-        lines += [
-            "",
-            "【复核提示】",
-        ]
-
+        lines.extend(["", "【复核提示】"])
         for warning in chart.warnings:
-            lines.append(
-                f"• {warning}"
-            )
+            lines.append(f"• {warning}")
 
-    lines += [
+    lines.extend([
         "",
         "注：纳音、胎元、命宫及神煞属于辅助取象；"
         "本工具不以它们独立定富贵。",
         "",
         "本应用用于传统命理文化研究与娱乐参考，"
         "不构成人生决策依据。",
-    ]
+    ])
 
     return "\n".join(lines)
 
@@ -197,17 +183,14 @@ class HomeScreen(Screen):
         super().__init__(**kwargs)
 
         app = App.get_running_app()
-
         self.store = JsonStore(
-            app.user_data_dir
-            + "/time_charts.json"
+            app.user_data_dir + "/time_charts.json"
         )
 
-        root = FloatLayout()
+        self._current_chart_running = False
+        self._current_refresh_pending = False
 
-        # -------------------------------------------------
-        # 顶部标题
-        # -------------------------------------------------
+        root = FloatLayout()
 
         title = make_label(
             "现在的时间局",
@@ -218,83 +201,23 @@ class HomeScreen(Screen):
             halign="center",
             valign="middle",
         )
-
-        title.pos_hint = {
-            "top": 1,
-            "x": 0,
-        }
-
+        title.pos_hint = {"top": 1, "x": 0}
         title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
         root.add_widget(title)
-
-        # -------------------------------------------------
-        # 当前时间局
-        # -------------------------------------------------
 
         current_scroll = ScrollView(
             size_hint=(1, None),
             height=dp(260),
-            pos_hint={
-                "top": 0.88,
-                "x": 0,
-            },
+            pos_hint={"top": 0.88, "x": 0},
         )
 
-        self.current_output = make_label(
-            "",
-            size=14,
-            halign="left",
-            valign="top",
-            size_hint_y=None,
-            padding=(
-                dp(8),
-                dp(8)
-            ),
-        )
-
-        self.current_output.bind(
-            texture_size=lambda obj, value:
-            setattr(
-                obj,
-                "height",
-                max(
-                    value[1] + dp(20),
-                    dp(200)
-                )
-            )
-        )
-
-        self.current_output.bind(
-            size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                (
-                    value[0] - dp(16),
-                    None
-                )
-            )
-        )
-
-        current_scroll.add_widget(
-            self.current_output
-        )
-
-        root.add_widget(
-            current_scroll
-        )
-
-        # -------------------------------------------------
-        # 我的时间局
-        # -------------------------------------------------
+        self.current_output = make_scroll_label(14)
+        self.current_output.text = "正在计算当前时间局……"
+        current_scroll.add_widget(self.current_output)
+        root.add_widget(current_scroll)
 
         list_title = make_label(
             "我的时间局",
@@ -305,36 +228,17 @@ class HomeScreen(Screen):
             halign="left",
             valign="middle",
         )
-
-        list_title.pos_hint = {
-            "top": 0.57,
-            "x": 0,
-        }
-
+        list_title.pos_hint = {"top": 0.57, "x": 0}
         list_title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        root.add_widget(
-            list_title
-        )
-
-        # -------------------------------------------------
-        # 保存列表
-        # -------------------------------------------------
+        root.add_widget(list_title)
 
         self.list_scroll = ScrollView(
             size_hint=(1, None),
             height=dp(250),
-            pos_hint={
-                "top": 0.51,
-                "x": 0,
-            },
+            pos_hint={"top": 0.51, "x": 0},
         )
 
         self.list_box = GridLayout(
@@ -343,216 +247,115 @@ class HomeScreen(Screen):
             padding=dp(4),
             size_hint_y=None,
         )
-
         self.list_box.bind(
-            minimum_height=
-            self.list_box.setter("height")
+            minimum_height=self.list_box.setter("height")
         )
+        self.list_scroll.add_widget(self.list_box)
+        root.add_widget(self.list_scroll)
 
-        self.list_scroll.add_widget(
-            self.list_box
-        )
-
-        root.add_widget(
-            self.list_scroll
-        )
-
-        # -------------------------------------------------
-        # 右下角加号
-        # -------------------------------------------------
-
-        add_button = make_button(
-            "+",
-            height=60
-        )
-
+        add_button = make_button("+", height=60)
         add_button.font_size = dp(32)
+        add_button.size_hint = (None, None)
+        add_button.size = (dp(60), dp(60))
+        add_button.pos_hint = {"right": 0.96, "y": 0.03}
+        add_button.bind(on_release=self.open_add)
+        root.add_widget(add_button)
 
-        add_button.size_hint = (
-            None,
-            None
-        )
+        self.add_widget(root)
 
-        add_button.size = (
-            dp(60),
-            dp(60)
-        )
+        Clock.schedule_once(self.refresh_list, 0)
+        Clock.schedule_once(self.refresh_current, 0)
+        Clock.schedule_interval(self.refresh_current, 60)
 
-        add_button.pos_hint = {
-            "right": 0.96,
-            "y": 0.03,
-        }
-
-        add_button.bind(
-            on_release=self.open_add
-        )
-
-        root.add_widget(
-            add_button
-        )
-
-        self.add_widget(
-            root
-        )
-
-        # 第一次刷新
-        Clock.schedule_once(
-            self.refresh_current,
-            0
-        )
-
-        Clock.schedule_once(
-            self.refresh_list,
-            0
-        )
-
-        # 每分钟刷新当前时间局
-        Clock.schedule_interval(
-            self.refresh_current,
-            60
-        )
-
-    # =====================================================
-    # 当前时间局
-    # =====================================================
+    # -----------------------------------------------------
+    # 后台计算当前时间局
+    # -----------------------------------------------------
 
     def refresh_current(self, *_):
+        if self._current_chart_running:
+            self._current_refresh_pending = True
+            return
 
-        now = datetime.now()
+        self._current_chart_running = True
+        self._current_refresh_pending = False
+
+        def calculate():
+            try:
+                now = datetime.now()
+                chart = build_chart(now, -77.49, "男")
+                result = chart_to_text(chart, "现在的时间局")
+            except Exception as error:
+                result = "当前时间局生成失败：\n" + str(error)
+
+            Clock.schedule_once(
+                lambda dt, text=result:
+                self._finish_current_refresh(text),
+                0,
+            )
 
         try:
-            chart = build_chart(
-                now,
-                -77.49,
-                "男",
-            )
-
-            self.current_output.text = (
-                chart_to_text(
-                    chart,
-                    "现在的时间局"
-                )
-            )
-
+            Thread(target=calculate, daemon=True).start()
         except Exception as error:
+            self._current_chart_running = False
             self.current_output.text = (
-                "当前时间局生成失败：\n"
-                + str(error)
+                "无法启动后台排盘：\n" + str(error)
             )
 
-    # =====================================================
-    # 页面进入
-    # =====================================================
+    def _finish_current_refresh(self, result):
+        self.current_output.text = result
+        self._current_chart_running = False
+
+        if self._current_refresh_pending:
+            self._current_refresh_pending = False
+            Clock.schedule_once(self.refresh_current, 0)
 
     def on_pre_enter(self, *args):
-
         self.refresh_list()
         self.refresh_current()
 
-    # =====================================================
-    # 刷新保存列表
-    # =====================================================
-
-    def refresh_list(self):
-
+    def refresh_list(self, *_):
         self.list_box.clear_widgets()
 
-        keys = list(
-            self.store.keys()
-        )
+        keys = list(self.store.keys())
 
-        # 没有任何时间局
         if not keys:
-
             empty = make_label(
-                "暂无保存的时间局",
+                "",
                 size=15,
-                color=(
-                    0.45,
-                    0.45,
-                    0.45,
-                    1
-                ),
+                color=(0.45, 0.45, 0.45, 1),
                 size_hint_y=None,
                 height=dp(50),
                 halign="center",
                 valign="middle",
             )
-
             empty.bind(
                 size=lambda obj, value:
-                setattr(
-                    obj,
-                    "text_size",
-                    value
-                )
+                setattr(obj, "text_size", value)
             )
-
-            self.list_box.add_widget(
-                empty
-            )
-
+            self.list_box.add_widget(empty)
             return
 
-        # 最新保存的放前面
-        keys.reverse()
-
-        for key in keys:
-
-            data = self.store.get(
-                key
-            )
-
-            name = data.get(
-                "name",
-                "未命名时间局"
-            )
-
-            time_text = data.get(
-                "time",
-                ""
-            )
+        for key in reversed(keys):
+            data = self.store.get(key)
+            name = data.get("name", "未命名时间局")
+            time_text = data.get("time", "")
 
             button = make_button(
                 f"{name}\n{time_text}",
-                height=62
+                height=62,
             )
-
             button.bind(
-                on_release=
-                lambda button,
-                saved_key=key:
-                self.open_detail(
-                    saved_key
-                )
+                on_release=lambda instance, saved_key=key:
+                self.open_detail(saved_key)
             )
-
-            self.list_box.add_widget(
-                button
-            )
-
-    # =====================================================
-    # 打开新增
-    # =====================================================
+            self.list_box.add_widget(button)
 
     def open_add(self, *_):
-
         self.manager.current = "add"
 
-    # =====================================================
-    # 打开详情
-    # =====================================================
-
     def open_detail(self, key):
-
-        detail = self.manager.get_screen(
-            "detail"
-        )
-
-        detail.show_chart(
-            key
-        )
-
+        detail = self.manager.get_screen("detail")
+        detail.show_chart(key)
         self.manager.current = "detail"
 
 
@@ -571,10 +374,6 @@ class AddScreen(Screen):
             spacing=dp(12),
         )
 
-        # -------------------------------------------------
-        # 顶部
-        # -------------------------------------------------
-
         header = BoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -582,21 +381,11 @@ class AddScreen(Screen):
             spacing=dp(8),
         )
 
-        back = make_button(
-            "‹ 返回",
-            height=46
-        )
-
+        back = make_button("‹ 返回", height=46)
         back.size_hint_x = None
         back.width = dp(90)
-
-        back.bind(
-            on_release=self.go_home
-        )
-
-        header.add_widget(
-            back
-        )
+        back.bind(on_release=self.go_home)
+        header.add_widget(back)
 
         title = make_label(
             "添加时间局",
@@ -605,40 +394,19 @@ class AddScreen(Screen):
             halign="center",
             valign="middle",
         )
-
         title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        header.add_widget(
-            title
-        )
-
-        root.add_widget(
-            header
-        )
-
-        # -------------------------------------------------
-        # 表单
-        # -------------------------------------------------
+        header.add_widget(title)
+        root.add_widget(header)
 
         form = GridLayout(
             cols=1,
             spacing=dp(8),
             size_hint_y=None,
         )
-
-        form.bind(
-            minimum_height=
-            form.setter("height")
-        )
-
-        # 名字
+        form.bind(minimum_height=form.setter("height"))
 
         name_title = make_label(
             "名字",
@@ -648,19 +416,11 @@ class AddScreen(Screen):
             halign="left",
             valign="middle",
         )
-
         name_title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        form.add_widget(
-            name_title
-        )
+        form.add_widget(name_title)
 
         self.name_input = TextInput(
             text="",
@@ -670,12 +430,7 @@ class AddScreen(Screen):
             height=dp(48),
             **font_args()
         )
-
-        form.add_widget(
-            self.name_input
-        )
-
-        # 时间
+        form.add_widget(self.name_input)
 
         time_title = make_label(
             "时间",
@@ -685,224 +440,142 @@ class AddScreen(Screen):
             halign="left",
             valign="middle",
         )
-
         time_title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        form.add_widget(
-            time_title
-        )
+        form.add_widget(time_title)
 
         self.time_input = TextInput(
-            text=datetime.now().strftime(
-                "%Y-%m-%d %H:%M"
-            ),
+            text=datetime.now().strftime("%Y-%m-%d %H:%M"),
             hint_text="YYYY-MM-DD HH:MM",
             multiline=False,
             size_hint_y=None,
             height=dp(48),
             **font_args()
         )
-
-        form.add_widget(
-            self.time_input
-        )
+        form.add_widget(self.time_input)
 
         tip = make_label(
             "时间格式：2026-10-05 12:30",
             size=13,
-            color=(
-                0.45,
-                0.45,
-                0.45,
-                1
-            ),
+            color=(0.45, 0.45, 0.45, 1),
             size_hint_y=None,
             height=dp(32),
             halign="left",
             valign="middle",
         )
-
         tip.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        form.add_widget(
-            tip
-        )
-
-        root.add_widget(
-            form
-        )
-
-        # -------------------------------------------------
-        # 错误提示
-        # -------------------------------------------------
+        form.add_widget(tip)
+        root.add_widget(form)
 
         self.error = make_label(
             "",
             size=14,
-            color=(
-                0.75,
-                0.15,
-                0.15,
-                1
-            ),
+            color=(0.75, 0.15, 0.15, 1),
             size_hint_y=None,
             height=dp(60),
             halign="left",
             valign="top",
         )
-
         self.error.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
+        root.add_widget(self.error)
 
-        root.add_widget(
-            self.error
-        )
+        self.save_button = make_button("保存时间局", height=52)
+        self.save_button.bind(on_release=self.save_chart)
+        root.add_widget(self.save_button)
 
-        # -------------------------------------------------
-        # 保存按钮
-        # -------------------------------------------------
-
-        save = make_button(
-            "保存时间局",
-            height=52
-        )
-
-        save.bind(
-            on_release=self.save_chart
-        )
-
-        root.add_widget(
-            save
-        )
-
-        # 底部空白
-        root.add_widget(
-            WidgetSpacer()
-        )
-
-        self.add_widget(
-            root
-        )
-
-    # =====================================================
-    # 返回首页
-    # =====================================================
+        root.add_widget(Widget())
+        self.add_widget(root)
 
     def go_home(self, *_):
-
         self.manager.current = "home"
-
-    # =====================================================
-    # 保存
-    # =====================================================
 
     def save_chart(self, *_):
+        if getattr(self, "_saving", False):
+            return
 
         name = self.name_input.text.strip()
+        time_text = self.time_input.text.strip()
 
-        time_text = (
-            self.time_input.text.strip()
-        )
-
-        # 名字不能为空
         if not name:
-
-            self.error.text = (
-                "请输入时间局名字。"
-            )
-
+            self.error.text = "请输入时间局名字。"
             return
 
-        # 检查时间
         try:
+            dt = datetime.strptime(time_text, "%Y-%m-%d %H:%M")
+        except ValueError:
+            self.error.text = (
+                "时间格式不正确。\n请输入：YYYY-MM-DD HH:MM"
+            )
+            return
 
-            dt = datetime.strptime(
-                time_text,
+        self._saving = True
+        self.save_button.disabled = True
+        self.error.text = "正在生成排盘……"
+
+        def calculate():
+            try:
+                # 先验证排盘能否生成，避免阻塞界面
+                build_chart(dt, -77.49, "男")
+                error_text = None
+            except Exception as error:
+                error_text = str(error)
+
+            Clock.schedule_once(
+                lambda tick:
+                self._finish_save(name, dt, error_text),
+                0,
+            )
+
+        try:
+            Thread(target=calculate, daemon=True).start()
+        except Exception as error:
+            self._saving = False
+            self.save_button.disabled = False
+            self.error.text = "无法启动后台计算：\n" + str(error)
+
+    def _finish_save(self, name, dt, error_text):
+        self._saving = False
+        self.save_button.disabled = False
+
+        if error_text is not None:
+            self.error.text = "这个时间无法生成排盘：\n" + error_text
+            return
+
+        try:
+            app = App.get_running_app()
+            store = JsonStore(
+                app.user_data_dir + "/time_charts.json"
+            )
+
+            key = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            store.put(
+                key,
+                name=name,
+                time=dt.strftime("%Y-%m-%d %H:%M"),
+                longitude=-77.49,
+                sex="男",
+            )
+
+            self.name_input.text = ""
+            self.time_input.text = datetime.now().strftime(
                 "%Y-%m-%d %H:%M"
             )
+            self.error.text = ""
 
-        except ValueError:
-
-            self.error.text = (
-                "时间格式不正确。\n"
-                "请输入：YYYY-MM-DD HH:MM"
-            )
-
-            return
-
-        # 验证排盘
-        try:
-
-            build_chart(
-                dt,
-                -77.49,
-                "男"
-            )
+            home = self.manager.get_screen("home")
+            home.refresh_list()
+            self.manager.current = "home"
 
         except Exception as error:
-
-            self.error.text = (
-                "这个时间无法生成排盘：\n"
-                + str(error)
-            )
-
-            return
-
-        app = App.get_running_app()
-
-        store = JsonStore(
-            app.user_data_dir
-            + "/time_charts.json"
-        )
-
-        # 唯一 ID
-        key = datetime.now().strftime(
-            "%Y%m%d%H%M%S%f"
-        )
-
-        store.put(
-            key,
-            name=name,
-            time=dt.strftime(
-                "%Y-%m-%d %H:%M"
-            ),
-            longitude=-77.49,
-            sex="男",
-        )
-
-        # 清空
-        self.name_input.text = ""
-
-        self.time_input.text = (
-            datetime.now().strftime(
-                "%Y-%m-%d %H:%M"
-            )
-        )
-
-        self.error.text = ""
-
-        # 回首页
-        self.manager.current = "home"
+            self.error.text = "保存失败：\n" + str(error)
 
 
 # =========================================================
@@ -922,10 +595,6 @@ class DetailScreen(Screen):
             spacing=dp(8),
         )
 
-        # -------------------------------------------------
-        # 顶部
-        # -------------------------------------------------
-
         header = BoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -933,21 +602,11 @@ class DetailScreen(Screen):
             spacing=dp(8),
         )
 
-        back = make_button(
-            "‹ 返回",
-            height=46
-        )
-
+        back = make_button("‹ 返回", height=46)
         back.size_hint_x = None
         back.width = dp(90)
-
-        back.bind(
-            on_release=self.go_home
-        )
-
-        header.add_widget(
-            back
-        )
+        back.bind(on_release=self.go_home)
+        header.add_widget(back)
 
         self.title = make_label(
             "时间局",
@@ -956,212 +615,84 @@ class DetailScreen(Screen):
             halign="center",
             valign="middle",
         )
-
         self.title.bind(
             size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                value
-            )
+            setattr(obj, "text_size", value)
         )
-
-        header.add_widget(
-            self.title
-        )
-
-        root.add_widget(
-            header
-        )
-
-        # -------------------------------------------------
-        # 内容
-        # -------------------------------------------------
+        header.add_widget(self.title)
+        root.add_widget(header)
 
         scroll = ScrollView()
+        self.output = make_scroll_label(14)
+        scroll.add_widget(self.output)
+        root.add_widget(scroll)
 
-        self.output = make_label(
-            "",
-            size=14,
-            halign="left",
-            valign="top",
-            size_hint_y=None,
-            padding=(
-                dp(8),
-                dp(8)
-            ),
-        )
-
-        self.output.bind(
-            texture_size=lambda obj, value:
-            setattr(
-                obj,
-                "height",
-                value[1] + dp(30)
-            )
-        )
-
-        self.output.bind(
-            size=lambda obj, value:
-            setattr(
-                obj,
-                "text_size",
-                (
-                    value[0] - dp(16),
-                    None
-                )
-            )
-        )
-
-        scroll.add_widget(
-            self.output
-        )
-
-        root.add_widget(
-            scroll
-        )
-
-        self.add_widget(
-            root
-        )
-
-    # =====================================================
-    # 返回
-    # =====================================================
+        self.add_widget(root)
 
     def go_home(self, *_):
-
         self.manager.current = "home"
 
-    # =====================================================
-    # 显示时间局
-    # =====================================================
-
     def show_chart(self, key):
-
         self.current_key = key
 
-        app = App.get_running_app()
-
-        store = JsonStore(
-            app.user_data_dir
-            + "/time_charts.json"
-        )
-
-        if not store.exists(key):
-
-            self.title.text = (
-                "找不到时间局"
-            )
-
-            self.output.text = (
-                "这个时间局已经不存在。"
-            )
-
-            return
-
-        data = store.get(
-            key
-        )
-
-        name = data.get(
-            "name",
-            "未命名时间局"
-        )
-
-        time_text = data.get(
-            "time",
-            ""
-        )
-
-        longitude = float(
-            data.get(
-                "longitude",
-                -77.49
-            )
-        )
-
-        sex = data.get(
-            "sex",
-            "男"
-        )
-
         try:
-
-            dt = datetime.strptime(
-                time_text,
-                "%Y-%m-%d %H:%M"
+            app = App.get_running_app()
+            store = JsonStore(
+                app.user_data_dir + "/time_charts.json"
             )
 
-            chart = build_chart(
-                dt,
-                longitude,
-                sex
-            )
+            if not store.exists(key):
+                self.title.text = "找不到时间局"
+                self.output.text = "这个时间局已经不存在。"
+                return
+
+            data = store.get(key)
+            name = data.get("name", "未命名时间局")
+            time_text = data.get("time", "")
+            longitude = float(data.get("longitude", -77.49))
+            sex = data.get("sex", "男")
 
             self.title.text = name
+            self.output.text = "正在计算排盘……"
 
-            self.output.text = (
-                chart_to_text(
-                    chart,
-                    name
+            dt = datetime.strptime(time_text, "%Y-%m-%d %H:%M")
+
+            def calculate():
+                try:
+                    chart = build_chart(dt, longitude, sex)
+                    result = chart_to_text(chart, name)
+                except Exception as error:
+                    result = "时间局生成失败：\n" + str(error)
+
+                Clock.schedule_once(
+                    lambda tick, text=result:
+                    self._finish_detail(text),
+                    0,
                 )
-            )
+
+            Thread(target=calculate, daemon=True).start()
 
         except Exception as error:
+            self.title.text = "时间局"
+            self.output.text = "读取时间局失败：\n" + str(error)
 
-            self.title.text = name
+    def _finish_detail(self, result):
+        self.output.text = result
 
-            self.output.text = (
-                "时间局生成失败：\n"
-                + str(error)
-            )
-
-
-# =========================================================
-# 空白占位
-# =========================================================
-
-class WidgetSpacer(Widget):
-    pass
-
-
-# =========================================================
-# App
-# =========================================================
 
 class WuxingApp(App):
 
     title = "五行排盘"
 
     def build(self):
-
-        Window.softinput_mode = (
-            "below_target"
-        )
+        Window.softinput_mode = "below_target"
 
         manager = ScreenManager()
-
-        manager.add_widget(
-            HomeScreen(
-                name="home"
-            )
-        )
-
-        manager.add_widget(
-            AddScreen(
-                name="add"
-            )
-        )
-
-        manager.add_widget(
-            DetailScreen(
-                name="detail"
-            )
-        )
+        manager.add_widget(HomeScreen(name="home"))
+        manager.add_widget(AddScreen(name="add"))
+        manager.add_widget(DetailScreen(name="detail"))
 
         return manager
 
     def on_start(self):
-
         self.root.current = "home"
