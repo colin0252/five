@@ -1,3 +1,4 @@
+
 name: Build iOS IPA
 
 on:
@@ -134,6 +135,8 @@ jobs:
 
       - name: Build iOS app
         run: |
+          set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cd "$PROJECT_DIR"
@@ -151,10 +154,33 @@ jobs:
             PRODUCT_NAME=colin-app \
             PRODUCT_BUNDLE_IDENTIFIER=com.colin.wuxing \
             INFOPLIST_KEY_CFBundleDisplayName="五行排盘" \
+            INFOPLIST_KEY_NSLocationWhenInUseUsageDescription="用于获取您所在位置的经纬度，以计算真太阳时" \
             IPHONEOS_DEPLOYMENT_TARGET=12.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
+
+      # 检查定位权限说明是否真的写入应用 Info.plist
+      - name: Verify location permission
+        run: |
+          set -e
+
+          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+          INFO_PLIST="$APP_PATH/Info.plist"
+
+          echo "=== Checking app Info.plist ==="
+
+          test -f "$INFO_PLIST"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :NSLocationWhenInUseUsageDescription" \
+            "$INFO_PLIST"
+
+          echo "=== Checking bundle identifier ==="
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$INFO_PLIST"
 
       - name: Check app
         run: |
@@ -168,6 +194,8 @@ jobs:
 
       - name: Package IPA
         run: |
+          set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cd "$PROJECT_DIR"
@@ -186,6 +214,8 @@ jobs:
 
       - name: Copy IPA to workspace
         run: |
+          set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
