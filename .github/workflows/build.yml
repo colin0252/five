@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - main
-
   pull_request:
     branches:
       - main
-
   workflow_dispatch:
 
 jobs:
@@ -19,20 +17,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 下载中文字体，放入项目根目录的 fonts 文件夹
+      - name: Cache kivy-ios build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/kivy-ios/dist
+            ${{ runner.temp }}/kivy-ios/build
+          key: kivy-ios-${{ runner.os }}-py311-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            kivy-ios-${{ runner.os }}-py311-
+
       - name: Prepare Chinese font
         run: |
           set -e
-
           mkdir -p "$GITHUB_WORKSPACE/fonts"
-
-          curl -fL --retry 3 \
-            'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' \
-            -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
-
+          if [ ! -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf" ]; then
+            curl -fL --retry 3 \
+              'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' \
+              -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
+          fi
           test -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
-
-          echo "Chinese font downloaded successfully:"
           ls -lh "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
 
       - name: Setup Python
@@ -42,107 +46,50 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          brew update
-          brew install autoconf automake libtool pkg-config
-          brew link libtool --force
+          brew install autoconf automake libtool pkg-config || true
+          brew link libtool --force || true
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install "Cython<3.1"
-          python -m pip install "kivy>=2.3.0,<2.4.0"
+          python -m pip install -r requirements.txt
           python -m pip install --upgrade kivy-ios
 
       - name: Check environment
         run: |
           python --version
-          python -m pip --version
-          cython --version
-          python -m pip show kivy-ios
-          which toolchain
-          toolchain --help
-
-      - name: Prepare kivy-ios build directory
-        run: |
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
-
-          echo "Kivy-iOS build directory:"
-          echo "$BUILD_DIR"
+          python -m pip show kivy-ios          which toolchain
 
       - name: Build Python3 recipe
         run: |
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
+          mkdir -p "$BUILD_DIR"
           cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Build python3 ==="
           toolchain build python3
-
-      - name: Check Python3 recipe
-        run: |
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
-          cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Recipe status ==="
-          toolchain status
 
       - name: Build Kivy recipe
         run: |
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
           cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Build Kivy ==="
           toolchain build kivy
 
       - name: Create iOS project
         run: |
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Creating iOS project ==="
-
           rm -rf "$PROJECT_DIR"
-
-          toolchain create colin-app "$GITHUB_WORKSPACE"
-
-          echo "=== Checking generated project ==="
-
+          toolchain create colin-app "$GITHUB_WORKSPACE" \
+            --requirements "python3,kivy,plyer"
           test -d "$PROJECT_DIR"
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
-
-          echo "Project created:"
           ls -lah "$PROJECT_DIR"
 
       - name: Build iOS app
         run: |
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cd "$PROJECT_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Building Xcode project ==="
-
           xcodebuild \
             -project colin-app.xcodeproj \
             -scheme colin-app \
@@ -151,7 +98,8 @@ jobs:
             PRODUCT_NAME=colin-app \
             PRODUCT_BUNDLE_IDENTIFIER=com.colin.wuxing \
             INFOPLIST_KEY_CFBundleDisplayName="五行排盘" \
-            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
+            INFOPLIST_KEY_NSLocationWhenInUseUsageDescription="用于按您所在经度计算真太阳时，使排盘更准确" \
+            IPHONEOS_DEPLOYMENT_TARGET=13.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
@@ -159,40 +107,24 @@ jobs:
       - name: Check app
         run: |
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
-          echo "=== Checking app ==="
-
           test -d "$PROJECT_DIR/build/colin-app.app"
-
           ls -lah "$PROJECT_DIR/build/colin-app.app"
 
       - name: Package IPA
         run: |
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cd "$PROJECT_DIR"
-
-          echo "=== Packaging IPA ==="
-
           rm -rf Payload
           mkdir Payload
-
           cp -R build/colin-app.app Payload/
-
           zip -r colin-app-unsigned.ipa Payload
-
-          echo "=== IPA created ==="
           ls -lh colin-app-unsigned.ipa
 
       - name: Copy IPA to workspace
         run: |
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
              "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
-
-          echo "=== IPA copied ==="
-          ls -lh "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
