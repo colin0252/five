@@ -1,4 +1,4 @@
-
+# wuxing/ui.py
 import os
 import json
 from datetime import datetime
@@ -17,9 +17,10 @@ from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
-
+from kivy.uix.popup import Popup
 
 from .paipan import build_chart
+from .location import get_location, DEFAULT_LONGITUDE
 
 
 # ============================================================
@@ -46,11 +47,11 @@ FONT_PATH = os.path.join(
     PROJECT_ROOT, "fonts", "NotoSansSC-Regular.ttf"
 )
 
+_FONT_ARGS = {"font_name": FONT_PATH} if os.path.isfile(FONT_PATH) else {}
+
 
 def font_args():
-    if os.path.isfile(FONT_PATH):
-        return {"font_name": FONT_PATH}
-    return {}
+    return _FONT_ARGS
 
 
 def make_label(text="", **kwargs):
@@ -93,9 +94,7 @@ def make_input(**kwargs):
     kwargs.setdefault("background_color", CARD)
     kwargs.setdefault("foreground_color", TEXT)
     kwargs.setdefault("cursor_color", GREEN)
-    kwargs.setdefault(
-        "padding", [dp(12), dp(12), dp(12), dp(12)]
-    )
+    kwargs.setdefault("padding", [dp(12), dp(12), dp(12), dp(12)])
     kwargs.update(font_args())
     return TextInput(**kwargs)
 
@@ -130,9 +129,7 @@ def format_chart(chart, title="时间局"):
         return chart
 
     if isinstance(chart, dict):
-        return json.dumps(
-            chart, ensure_ascii=False, indent=2, default=str
-        )
+        return json.dumps(chart, ensure_ascii=False, indent=2, default=str)
 
     try:
         lines = [
@@ -171,9 +168,7 @@ def format_chart(chart, title="时间局"):
         ])
 
         for element in ("木", "火", "土", "金", "水"):
-            lines.append(
-                f"{element}：{chart.wuxing.get(element, 0)}"
-            )
+            lines.append(f"{element}：{chart.wuxing.get(element, 0)}")
 
         lines.extend(["", "大运", "----------------"])
 
@@ -230,6 +225,12 @@ class HomeScreen(Screen):
         )
         self.saved_charts = self.load_saved_charts()
 
+        # ---- 定位状态 ----
+        self.current_longitude = DEFAULT_LONGITUDE
+        self.location_source = "default"
+        self.location_error = None
+        self._refresh_event = None
+
         root = BoxLayout(
             orientation="vertical",
             padding=[dp(14), dp(8), dp(14), dp(8)],
@@ -264,7 +265,7 @@ class HomeScreen(Screen):
 
         root.add_widget(header)
 
-        # 主卡片：左边竖排即时局，右边排盘
+        # 主卡片
         main_card = Card(
             orientation="horizontal",
             padding=dp(9),
@@ -305,7 +306,7 @@ class HomeScreen(Screen):
             spacing=dp(8),
         )
 
-        # 四柱表格：列标题在上，天干和地支上下排列
+        # 四柱表格：预建 4 个 cell，刷新只改文字
         self.pillars_grid = GridLayout(
             cols=4,
             spacing=dp(5),
@@ -314,7 +315,47 @@ class HomeScreen(Screen):
         )
         content.add_widget(self.pillars_grid)
 
-        # 出生时间信息，不显示“现在的时间局”和性别
+        self.pillar_cells = []  # [(gan_label, zhi_label), ...]
+        for name in ("年", "月", "日", "时"):
+            cell = Card(
+                orientation="vertical",
+                padding=[dp(2), dp(4), dp(2), dp(4)],
+                spacing=dp(1),
+                card_color=GREEN_LIGHT,
+                radius=10,
+            )
+            cell.add_widget(
+                make_label(
+                    name,
+                    font_size=dp(14),
+                    bold=True,
+                    color=TEXT,
+                    halign="center",
+                    height=dp(30),
+                )
+            )
+            gan_label = make_label(
+                "",
+                font_size=dp(26),
+                bold=True,
+                color=TEXT,
+                halign="center",
+                height=dp(48),
+            )
+            zhi_label = make_label(
+                "",
+                font_size=dp(26),
+                bold=True,
+                color=TEXT,
+                halign="center",
+                height=dp(48),
+            )
+            cell.add_widget(gan_label)
+            cell.add_widget(zhi_label)
+            self.pillars_grid.add_widget(cell)
+            self.pillar_cells.append((gan_label, zhi_label))
+
+        # 出生时间信息
         self.birth_info = Card(
             orientation="vertical",
             padding=[dp(8), dp(5), dp(5), dp(5)],
@@ -339,10 +380,13 @@ class HomeScreen(Screen):
         )
 
         self.longitude_label = make_label(
-            "经度：-77.49",
+            "经度：定位中……",
             font_size=dp(12),
             color=GREEN,
             height=dp(29),
+        )
+        self.longitude_label.bind(
+            on_touch_down=self._on_longitude_click
         )
 
         self.birth_info.add_widget(self.birth_label)
@@ -466,13 +510,106 @@ class HomeScreen(Screen):
         self.add_widget(root)
 
         self.refresh_list()
-        Clock.schedule_once(self.refresh_current, 0)
-        Clock.schedule_interval(self.refresh_current, 60)
+
+        # 启动后请求定位（稍延迟，等 UI 就绪）
+        Clock.schedule_once(lambda dt: self._request_location(), 0.3)
+
+    # ---------- 定位 ----------
+
+    def _request_location(self):
+        def cb(lat, lon, source, error):
+            Clock.schedule_once(
+                lambda dt: self._on_location(lat, lon, source, error), 0
+            )
+        get_location(cb)
+
+    def _on_location(self, lat, lon, source, error):
+        self.current_longitude = lon
+        self.location_source = source
+        self.location_error = error
+
+        if source == "gps":
+            self.longitude_label.text = f"经度：{lon:.2f}（定位）"
+        else:
+            self.longitude_label.text = (
+                f"经度：{lon:.2f}（默认，点击可改）"
+            )
+
+        # 拿到经度后立即重算即时局
+        self.refresh_current()
+
+    def _on_longitude_click(self, instance, touch):
+        if not instance.collide_point(*touch.pos):
+            return False
+        self._show_longitude_input()
+        return True
+
+    def _show_longitude_input(self):
+        content = BoxLayout(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(8),
+        )
+        content.add_widget(
+            make_label(
+                "手动输入经度（东经为正，西经为负）",
+                font_size=dp(13),
+                color=MUTED,
+                height=dp(28),
+            )
+        )
+        inp = make_input(
+            text=f"{self.current_longitude:.2f}",
+            hint_text="例如：116.40",
+        )
+        content.add_widget(inp)
+
+        popup = Popup(
+            title="经度",
+            content=content,
+            size_hint=(0.85, 0.35),
+        )
+
+        def do_save(*_):
+            try:
+                value = float(inp.text.strip())
+                if not -180 <= value <= 180:
+                    raise ValueError("范围 -180~180")
+            except ValueError:
+                inp.text = f"{self.current_longitude:.2f}"
+                return
+            self.current_longitude = value
+            self.location_source = "manual"
+            self.longitude_label.text = f"经度：{value:.2f}（手动）"
+            self.refresh_current()
+            popup.dismiss()
+
+        content.add_widget(
+            make_button("保存", on_release=do_save)
+        )
+        popup.open()
+
+    # ---------- 定时器 ----------
+
+    def on_pre_enter(self, *_):
+        # 进入首页时启动每分钟刷新
+        self.refresh_current()
+        if self._refresh_event is None:
+            self._refresh_event = Clock.schedule_interval(
+                self.refresh_current, 60
+            )
+
+    def on_leave(self, *_):
+        # 离开首页时停止，省电
+        if self._refresh_event is not None:
+            self._refresh_event.cancel()
+            self._refresh_event = None
+
+    # ---------- 存储 ----------
 
     def load_saved_charts(self):
         if not os.path.isfile(self.store_path):
             return {}
-
         try:
             with open(self.store_path, "r", encoding="utf-8") as file:
                 data = json.load(file)
@@ -483,7 +620,6 @@ class HomeScreen(Screen):
     def save_saved_charts(self):
         os.makedirs(os.path.dirname(self.store_path), exist_ok=True)
         temp_path = self.store_path + ".tmp"
-
         with open(temp_path, "w", encoding="utf-8") as file:
             json.dump(
                 self.saved_charts,
@@ -491,15 +627,17 @@ class HomeScreen(Screen):
                 ensure_ascii=False,
                 indent=2,
             )
-
         os.replace(temp_path, self.store_path)
+
+    # ---------- 即时局 ----------
 
     def refresh_current(self, *_):
         now = datetime.now()
+        longitude = self.current_longitude
 
         def work():
             try:
-                chart = build_chart(now, -77.49, "男")
+                chart = build_chart(now, longitude, "男")
                 pillars = get_pillars(chart)
                 birth = chart.birth.strftime("%Y-%m-%d %H:%M")
                 solar = chart.true_solar.strftime("%Y-%m-%d %H:%M")
@@ -520,71 +658,29 @@ class HomeScreen(Screen):
         Thread(target=work, daemon=True).start()
 
     def set_current_result(self, pillars, birth, solar, error):
-        self.pillars_grid.clear_widgets()
-
         if error:
             self.birth_label.text = "出生时间：计算失败"
             self.solar_label.text = error
-            self.longitude_label.text = "经度：-77.49"
             return
 
-        # 四柱配色：年红、月棕、日干绿/支蓝、时橙
+        if not pillars:
+            return
+
         gan_colors = [RED, BROWN, GREEN, ORANGE]
         zhi_colors = [RED, BROWN, BLUE, ORANGE]
 
-        for index, (name, pillar) in enumerate(pillars):
-            cell = Card(
-                orientation="vertical",
-                padding=[dp(2), dp(4), dp(2), dp(4)],
-                spacing=dp(1),
-                card_color=GREEN_LIGHT,
-                radius=10,
-            )
-
-            # 列标题
-            cell.add_widget(
-                make_label(
-                    name,
-                    font_size=dp(14),
-                    bold=True,
-                    color=TEXT,
-                    halign="center",
-                    height=dp(30),
-                )
-            )
-
-            # 干支拆开，必须上下排列
+        for index, (_, pillar) in enumerate(pillars):
+            gan_label, zhi_label = self.pillar_cells[index]
             ganzhi = str(pillar.ganzhi)
-            gan = ganzhi[0] if len(ganzhi) > 0 else ""
-            zhi = ganzhi[1] if len(ganzhi) > 1 else ""
-
-            cell.add_widget(
-                make_label(
-                    gan,
-                    font_size=dp(26),
-                    bold=True,
-                    color=gan_colors[index],
-                    halign="center",
-                    height=dp(48),
-                )
-            )
-
-            cell.add_widget(
-                make_label(
-                    zhi,
-                    font_size=dp(26),
-                    bold=True,
-                    color=zhi_colors[index],
-                    halign="center",
-                    height=dp(48),
-                )
-            )
-
-            self.pillars_grid.add_widget(cell)
+            gan_label.text = ganzhi[0] if len(ganzhi) > 0 else ""
+            zhi_label.text = ganzhi[1] if len(ganzhi) > 1 else ""
+            gan_label.color = gan_colors[index]
+            zhi_label.color = zhi_colors[index]
 
         self.birth_label.text = f"出生时间：{birth}"
         self.solar_label.text = f"真太阳时：{solar}"
-        self.longitude_label.text = "经度：-77.49"
+
+    # ---------- 列表 ----------
 
     def refresh_list(self):
         self.list_layout.clear_widgets()
@@ -616,7 +712,6 @@ class HomeScreen(Screen):
                     height=dp(29),
                 )
             )
-
             info.add_widget(
                 make_label(
                     time_text,
@@ -658,6 +753,7 @@ class HomeScreen(Screen):
         self.saved_charts[key] = {
             "name": name.strip() or "未命名时间局",
             "time": time_text.strip(),
+            "longitude": self.current_longitude,
         }
 
         self.save_saved_charts()
@@ -856,6 +952,8 @@ class DetailScreen(Screen):
 
         name = item.get("name", "未命名时间局")
         time_text = item.get("time", "")
+        # 优先用保存时记录的经度，旧数据回退到当前定位
+        longitude = item.get("longitude", home.current_longitude)
 
         self.title_label.text = name
         self.time_label.text = time_text
@@ -869,7 +967,7 @@ class DetailScreen(Screen):
                 )
                 chart = build_chart(
                     birth_time,
-                    -77.49,
+                    longitude,
                     "男",
                 )
                 result = format_chart(chart, name)
