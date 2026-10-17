@@ -24,7 +24,6 @@ jobs:
       - name: Prepare Chinese font
         run: |
           set -e
-
           mkdir -p "$GITHUB_WORKSPACE/fonts"
 
           curl -fL --retry 3 \
@@ -32,8 +31,6 @@ jobs:
             -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
 
           test -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
-
-          echo "Chinese font downloaded successfully:"
           ls -lh "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
 
       - name: Setup Python
@@ -66,84 +63,52 @@ jobs:
       - name: Prepare kivy-ios build directory
         run: |
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
           rm -rf "$BUILD_DIR"
           mkdir -p "$BUILD_DIR"
-
-          echo "Kivy-iOS build directory:"
-          echo "$BUILD_DIR"
+          echo "Kivy-iOS build directory: $BUILD_DIR"
 
       - name: Build Python3 recipe
         run: |
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
-          cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Build python3 ==="
+          cd "$RUNNER_TEMP/kivy-ios"
           toolchain build python3
+
+      # 新增：编译 iOS 原生桥接组件
+      - name: Build Pyobjus recipe
+        run: |
+          set -e
+          cd "$RUNNER_TEMP/kivy-ios"
+          toolchain build pyobjus
+          toolchain status
 
       - name: Check Python3 recipe
         run: |
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
-          cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Recipe status ==="
+          cd "$RUNNER_TEMP/kivy-ios"
           toolchain status
 
       - name: Build Kivy recipe
         run: |
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-
-          cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Build Kivy ==="
+          cd "$RUNNER_TEMP/kivy-ios"
           toolchain build kivy
 
       - name: Create iOS project
         run: |
           set -e
-
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cd "$BUILD_DIR"
-
-          echo "=== Current directory ==="
-          pwd
-
-          echo "=== Creating iOS project ==="
-
           rm -rf "$PROJECT_DIR"
-
           toolchain create colin-app "$GITHUB_WORKSPACE"
-
-          echo "=== Checking generated project ==="
 
           test -d "$PROJECT_DIR"
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
-
-          echo "Project created:"
           ls -lah "$PROJECT_DIR"
 
       - name: Build iOS app
         run: |
           set -e
-
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cd "$PROJECT_DIR"
-
-          echo "=== Building Xcode project ==="
 
           xcodebuild \
             -project colin-app.xcodeproj \
@@ -158,7 +123,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
-      # 关键步骤：把定位权限说明写入最终应用的 Info.plist
+      # 将定位权限说明写入最终应用的 Info.plist
       - name: Configure and verify location permission
         run: |
           set -e
@@ -166,17 +131,12 @@ jobs:
           APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
           INFO_PLIST="$APP_PATH/Info.plist"
 
-          echo "=== Checking app ==="
-
           test -d "$APP_PATH"
           test -f "$INFO_PLIST"
-
-          echo "=== Adding location permission description ==="
 
           if /usr/libexec/PlistBuddy \
             -c "Print :NSLocationWhenInUseUsageDescription" \
             "$INFO_PLIST" >/dev/null 2>&1; then
-
             /usr/libexec/PlistBuddy \
               -c "Set :NSLocationWhenInUseUsageDescription 用于获取您所在位置的经纬度，以计算真太阳时" \
               "$INFO_PLIST"
@@ -186,62 +146,43 @@ jobs:
               "$INFO_PLIST"
           fi
 
-          echo "=== Verifying location permission ==="
-
+          echo "=== Location permission ==="
           /usr/libexec/PlistBuddy \
             -c "Print :NSLocationWhenInUseUsageDescription" \
             "$INFO_PLIST"
 
-          echo "=== Verifying bundle identifier ==="
-
+          echo "=== Bundle identifier ==="
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleIdentifier" \
             "$INFO_PLIST"
 
-          echo "=== Location permission configured successfully ==="
-
       - name: Check app
         run: |
           set -e
-
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
-          echo "=== Checking app ==="
-
           test -d "$PROJECT_DIR/build/colin-app.app"
-
           ls -lah "$PROJECT_DIR/build/colin-app.app"
 
       - name: Package IPA
         run: |
           set -e
-
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-
           cd "$PROJECT_DIR"
-
-          echo "=== Packaging IPA ==="
 
           rm -rf Payload
           mkdir Payload
-
           cp -R build/colin-app.app Payload/
-
           zip -r colin-app-unsigned.ipa Payload
-
-          echo "=== IPA created ==="
           ls -lh colin-app-unsigned.ipa
 
       - name: Copy IPA to workspace
         run: |
           set -e
-
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
              "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
 
-          echo "=== IPA copied ==="
           ls -lh "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
 
       - name: Upload IPA
