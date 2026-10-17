@@ -18,23 +18,25 @@ from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
 
+
 from .paipan import build_chart
 
 
 # ============================================================
-# 颜色与字体
+# 颜色
 # ============================================================
 
 BG = (0.97, 0.96, 0.93, 1)
 CARD = (1.00, 0.99, 0.96, 1)
 GREEN = (0.08, 0.31, 0.25, 1)
 GREEN_LIGHT = (0.89, 0.93, 0.87, 1)
-GOLD = (0.76, 0.53, 0.19, 1)
+GOLD = (0.58, 0.39, 0.10, 1)
 TEXT = (0.20, 0.24, 0.23, 1)
 MUTED = (0.43, 0.47, 0.48, 1)
-RED = (0.76, 0.22, 0.20, 1)
-BLUE = (0.12, 0.52, 0.82, 1)
-ORANGE = (0.91, 0.49, 0.08, 1)
+RED = (0.82, 0.18, 0.18, 1)
+BLUE = (0.10, 0.48, 0.85, 1)
+BROWN = (0.52, 0.34, 0.13, 1)
+ORANGE = (0.92, 0.39, 0.03, 1)
 
 PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
@@ -63,10 +65,7 @@ def make_label(text="", **kwargs):
     label = Label(text=str(text), **kwargs)
 
     def update_text_size(instance, *_):
-        instance.text_size = (
-            max(0, instance.width),
-            None,
-        )
+        instance.text_size = (instance.width, None)
 
     label.bind(size=update_text_size)
     return label
@@ -102,15 +101,13 @@ def make_input(**kwargs):
 
 
 class Card(BoxLayout):
-    """带圆角底色的卡片。"""
-
-    def __init__(self, card_color=CARD, radius=16, **kwargs):
+    def __init__(self, card_color=CARD, radius=15, **kwargs):
         super().__init__(**kwargs)
         self.card_color = card_color
         self.radius = dp(radius)
 
         with self.canvas.before:
-            Color(*self.card_color)
+            self.bg_color_instruction = Color(*self.card_color)
             self.bg_rect = RoundedRectangle(
                 pos=self.pos,
                 size=self.size,
@@ -129,8 +126,6 @@ class Card(BoxLayout):
 # ============================================================
 
 def format_chart(chart, title="时间局"):
-    """把排盘对象转换为文字，不显示原始 Chart(...)。"""
-
     if isinstance(chart, str):
         return chart
 
@@ -157,13 +152,15 @@ def format_chart(chart, title="时间局"):
             ("日柱", chart.day),
             ("时柱", chart.hour),
         ):
-            lines.append(f"{name}：{pillar.ganzhi}")
-            lines.append(f"天干：{pillar.gan}")
-            lines.append(f"地支：{pillar.zhi}")
-            lines.append(f"天干十神：{pillar.ten_god_gan}")
-            lines.append(f"纳音：{pillar.na_yin}")
-            lines.append(f"藏干：{'、'.join(pillar.hidden)}")
-            lines.append("")
+            lines.extend([
+                f"{name}：{pillar.ganzhi}",
+                f"天干：{pillar.gan}",
+                f"地支：{pillar.zhi}",
+                f"天干十神：{pillar.ten_god_gan}",
+                f"纳音：{pillar.na_yin}",
+                f"藏干：{'、'.join(pillar.hidden)}",
+                "",
+            ])
 
         lines.extend([
             f"胎元：{chart.fetal}",
@@ -183,8 +180,8 @@ def format_chart(chart, title="时间局"):
         for item in chart.dayun:
             lines.append(
                 f"第{item.get('序', '')}步："
-                f"{item.get('干支', '')}  "
-                f"{item.get('起运岁', '')}岁起运  "
+                f"{item.get('干支', '')} "
+                f"{item.get('起运岁', '')}岁起运 "
                 f"{item.get('顺逆', '')}行"
             )
 
@@ -209,8 +206,7 @@ def format_chart(chart, title="时间局"):
         )
 
 
-def chart_pillars(chart):
-    """获取年、月、日、时四柱。"""
+def get_pillars(chart):
     return [
         ("年", chart.year),
         ("月", chart.month),
@@ -236,15 +232,16 @@ class HomeScreen(Screen):
 
         root = BoxLayout(
             orientation="vertical",
-            padding=[dp(16), dp(10), dp(16), dp(10)],
-            spacing=dp(10),
+            padding=[dp(14), dp(8), dp(14), dp(8)],
+            spacing=dp(9),
         )
 
         # 顶部标题
         header = BoxLayout(
+            orientation="horizontal",
             size_hint_y=None,
-            height=dp(44),
-            spacing=dp(8),
+            height=dp(46),
+            spacing=dp(6),
         )
 
         header.add_widget(
@@ -267,81 +264,85 @@ class HomeScreen(Screen):
 
         root.add_widget(header)
 
-        # 即时局卡片
-        # 左侧竖排“即、时、局”
-        # 右侧显示四柱、出生时间、真太阳时、经度
-        current_card = Card(
+        # 主卡片：左边竖排即时局，右边排盘
+        main_card = Card(
             orientation="horizontal",
-            padding=dp(10),
-            spacing=dp(10),
+            padding=dp(9),
+            spacing=dp(9),
             size_hint_y=None,
-            height=dp(300),
+            height=dp(290),
+            card_color=CARD,
         )
 
-        side_title = Card(
+        # 左侧竖排标签
+        side_card = Card(
             orientation="vertical",
             size_hint=(None, 1),
             width=dp(48),
-            padding=dp(4),
-            card_color=GREEN_LIGHT,
+            padding=[dp(3), dp(12), dp(3), dp(12)],
+            spacing=dp(8),
+            card_color=(0.93, 0.91, 0.84, 1),
         )
 
         for char in ("即", "时", "局"):
-            side_title.add_widget(
+            side_card.add_widget(
                 make_label(
                     char,
                     font_size=dp(25),
                     bold=True,
-                    color=GREEN,
+                    color=GOLD,
                     halign="center",
-                    height=dp(48),
+                    height=dp(43),
                 )
             )
 
-        side_title.add_widget(Widget())
-        current_card.add_widget(side_title)
+        side_card.add_widget(Widget())
+        main_card.add_widget(side_card)
 
+        # 右侧主内容
         content = BoxLayout(
             orientation="vertical",
             spacing=dp(8),
         )
 
-        # 四柱表格
+        # 四柱表格：列标题在上，天干和地支上下排列
         self.pillars_grid = GridLayout(
             cols=4,
-            spacing=dp(4),
+            spacing=dp(5),
             size_hint_y=None,
-            height=dp(150),
+            height=dp(158),
         )
         content.add_widget(self.pillars_grid)
 
-        # 出生信息，不显示性别
+        # 出生时间信息，不显示“现在的时间局”和性别
         self.birth_info = Card(
             orientation="vertical",
-            padding=[dp(10), dp(8), dp(8), dp(8)],
-            spacing=dp(2),
-            card_color=GREEN_LIGHT,
+            padding=[dp(8), dp(5), dp(5), dp(5)],
+            spacing=dp(1),
             size_hint_y=None,
-            height=dp(104),
+            height=dp(103),
+            card_color=GREEN_LIGHT,
         )
 
         self.birth_label = make_label(
             "出生时间：计算中……",
-            font_size=dp(13),
+            font_size=dp(12),
             color=GREEN,
-            height=dp(28),
+            height=dp(29),
         )
+
         self.solar_label = make_label(
             "真太阳时：计算中……",
-            font_size=dp(13),
+            font_size=dp(12),
             color=GREEN,
-            height=dp(28),
+            height=dp(29),
         )
+
         self.longitude_label = make_label(
             "经度：-77.49",
-            font_size=dp(13),
+            font_size=dp(12),
             color=GREEN,
-            height=dp(28),
+            height=dp(29),
         )
 
         self.birth_info.add_widget(self.birth_label)
@@ -349,10 +350,10 @@ class HomeScreen(Screen):
         self.birth_info.add_widget(self.longitude_label)
 
         content.add_widget(self.birth_info)
-        current_card.add_widget(content)
-        root.add_widget(current_card)
+        main_card.add_widget(content)
+        root.add_widget(main_card)
 
-        # 功能预留：只显示名称，不实现功能
+        # 奇门遁甲、罗盘：仅预留入口
         feature_row = BoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -362,7 +363,8 @@ class HomeScreen(Screen):
 
         qimen_card = Card(
             orientation="vertical",
-            padding=dp(8),
+            padding=dp(6),
+            spacing=dp(1),
             card_color=GREEN_LIGHT,
         )
         qimen_card.add_widget(
@@ -371,7 +373,7 @@ class HomeScreen(Screen):
                 font_size=dp(25),
                 color=GREEN,
                 halign="center",
-                height=dp(34),
+                height=dp(32),
             )
         )
         qimen_card.add_widget(
@@ -387,7 +389,8 @@ class HomeScreen(Screen):
 
         compass_card = Card(
             orientation="vertical",
-            padding=dp(8),
+            padding=dp(6),
+            spacing=dp(1),
             card_color=CARD,
         )
         compass_card.add_widget(
@@ -396,7 +399,7 @@ class HomeScreen(Screen):
                 font_size=dp(25),
                 color=RED,
                 halign="center",
-                height=dp(34),
+                height=dp(32),
             )
         )
         compass_card.add_widget(
@@ -414,7 +417,7 @@ class HomeScreen(Screen):
         feature_row.add_widget(compass_card)
         root.add_widget(feature_row)
 
-        # 我的时间局
+        # 我的时间局标题
         root.add_widget(
             make_label(
                 "我的时间局",
@@ -425,6 +428,7 @@ class HomeScreen(Screen):
             )
         )
 
+        # 已保存时间局列表
         self.list_layout = GridLayout(
             cols=1,
             spacing=dp(9),
@@ -434,12 +438,16 @@ class HomeScreen(Screen):
             minimum_height=self.list_layout.setter("height")
         )
 
-        list_scroll = ScrollView(do_scroll_x=False)
+        list_scroll = ScrollView(
+            do_scroll_x=False,
+            bar_width=dp(2),
+        )
         list_scroll.add_widget(self.list_layout)
         root.add_widget(list_scroll)
 
-        # 右下角加号
+        # 右下角加号按钮
         bottom = BoxLayout(
+            orientation="horizontal",
             size_hint_y=None,
             height=dp(58),
         )
@@ -492,7 +500,7 @@ class HomeScreen(Screen):
         def work():
             try:
                 chart = build_chart(now, -77.49, "男")
-                pillars = chart_pillars(chart)
+                pillars = get_pillars(chart)
                 birth = chart.birth.strftime("%Y-%m-%d %H:%M")
                 solar = chart.true_solar.strftime("%Y-%m-%d %H:%M")
                 error = None
@@ -520,76 +528,55 @@ class HomeScreen(Screen):
             self.longitude_label.text = "经度：-77.49"
             return
 
-        # 五行配色：年红、月棕、日干绿/支蓝、时橙
-        colors = [
-            RED,
-            (0.56, 0.35, 0.16, 1),
-            GREEN,
-            ORANGE,
-        ]
+        # 四柱配色：年红、月棕、日干绿/支蓝、时橙
+        gan_colors = [RED, BROWN, GREEN, ORANGE]
+        zhi_colors = [RED, BROWN, BLUE, ORANGE]
 
         for index, (name, pillar) in enumerate(pillars):
-            cell = BoxLayout(
+            cell = Card(
                 orientation="vertical",
-                padding=[dp(2), dp(5), dp(2), dp(5)],
-                spacing=dp(2),
+                padding=[dp(2), dp(4), dp(2), dp(4)],
+                spacing=dp(1),
+                card_color=GREEN_LIGHT,
+                radius=10,
             )
 
-            with cell.canvas.before:
-                Color(*CARD)
-                cell.bg_rect = RoundedRectangle(
-                    pos=cell.pos,
-                    size=cell.size,
-                    radius=[dp(9)],
-                )
-
-            def update_cell(instance, *_):
-                instance.bg_rect.pos = instance.pos
-                instance.bg_rect.size = instance.size
-
-            cell.bind(pos=update_cell, size=update_cell)
-
+            # 列标题
             cell.add_widget(
                 make_label(
                     name,
-                    font_size=dp(15),
+                    font_size=dp(14),
                     bold=True,
-                    color=GREEN,
+                    color=TEXT,
                     halign="center",
                     height=dp(30),
                 )
             )
 
+            # 干支拆开，必须上下排列
             ganzhi = str(pillar.ganzhi)
             gan = ganzhi[0] if len(ganzhi) > 0 else ""
             zhi = ganzhi[1] if len(ganzhi) > 1 else ""
 
-            gan_color = colors[index]
-            zhi_color = colors[index]
-
-            if index == 2:
-                gan_color = GREEN
-                zhi_color = BLUE
-
             cell.add_widget(
                 make_label(
                     gan,
-                    font_size=dp(25),
+                    font_size=dp(26),
                     bold=True,
-                    color=gan_color,
+                    color=gan_colors[index],
                     halign="center",
-                    height=dp(42),
+                    height=dp(48),
                 )
             )
 
             cell.add_widget(
                 make_label(
                     zhi,
-                    font_size=dp(25),
+                    font_size=dp(26),
                     bold=True,
-                    color=zhi_color,
+                    color=zhi_colors[index],
                     halign="center",
-                    height=dp(42),
+                    height=dp(48),
                 )
             )
 
@@ -602,7 +589,6 @@ class HomeScreen(Screen):
     def refresh_list(self):
         self.list_layout.clear_widgets()
 
-        # 没有保存项目时，列表保持空白
         for key, item in reversed(list(self.saved_charts.items())):
             name = item.get("name", "未命名时间局")
             time_text = item.get("time", "")
@@ -613,6 +599,7 @@ class HomeScreen(Screen):
                 spacing=dp(8),
                 size_hint_y=None,
                 height=dp(72),
+                card_color=CARD,
             )
 
             info = BoxLayout(
@@ -651,8 +638,8 @@ class HomeScreen(Screen):
                 on_release=lambda instance, chart_key=key:
                 self.open_detail(chart_key)
             )
-            card.add_widget(open_button)
 
+            card.add_widget(open_button)
             self.list_layout.add_widget(card)
 
     def open_add(self, *_):
@@ -757,11 +744,7 @@ class AddScreen(Screen):
 
         root.add_widget(form_card)
 
-        self.message = make_label(
-            "",
-            color=RED,
-            height=dp(38),
-        )
+        self.message = make_label("", color=RED, height=dp(38))
         root.add_widget(self.message)
 
         root.add_widget(
