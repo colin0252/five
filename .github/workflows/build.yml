@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 下载中文字体，放入项目根目录的 fonts 文件夹
+      # 下载中文字体
       - name: Prepare Chinese font
         run: |
           set -e
@@ -111,6 +111,8 @@ jobs:
 
       - name: Create iOS project
         run: |
+          set -e
+
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
@@ -141,9 +143,6 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "=== Current directory ==="
-          pwd
-
           echo "=== Building Xcode project ==="
 
           xcodebuild \
@@ -154,36 +153,57 @@ jobs:
             PRODUCT_NAME=colin-app \
             PRODUCT_BUNDLE_IDENTIFIER=com.colin.wuxing \
             INFOPLIST_KEY_CFBundleDisplayName="五行排盘" \
-            INFOPLIST_KEY_NSLocationWhenInUseUsageDescription="用于获取您所在位置的经纬度，以计算真太阳时" \
             IPHONEOS_DEPLOYMENT_TARGET=12.0 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
-      # 检查定位权限说明是否真的写入应用 Info.plist
-      - name: Verify location permission
+      # 关键步骤：把定位权限说明写入最终应用的 Info.plist
+      - name: Configure and verify location permission
         run: |
           set -e
 
           APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
           INFO_PLIST="$APP_PATH/Info.plist"
 
-          echo "=== Checking app Info.plist ==="
+          echo "=== Checking app ==="
 
+          test -d "$APP_PATH"
           test -f "$INFO_PLIST"
+
+          echo "=== Adding location permission description ==="
+
+          if /usr/libexec/PlistBuddy \
+            -c "Print :NSLocationWhenInUseUsageDescription" \
+            "$INFO_PLIST" >/dev/null 2>&1; then
+
+            /usr/libexec/PlistBuddy \
+              -c "Set :NSLocationWhenInUseUsageDescription 用于获取您所在位置的经纬度，以计算真太阳时" \
+              "$INFO_PLIST"
+          else
+            /usr/libexec/PlistBuddy \
+              -c "Add :NSLocationWhenInUseUsageDescription string 用于获取您所在位置的经纬度，以计算真太阳时" \
+              "$INFO_PLIST"
+          fi
+
+          echo "=== Verifying location permission ==="
 
           /usr/libexec/PlistBuddy \
             -c "Print :NSLocationWhenInUseUsageDescription" \
             "$INFO_PLIST"
 
-          echo "=== Checking bundle identifier ==="
+          echo "=== Verifying bundle identifier ==="
 
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleIdentifier" \
             "$INFO_PLIST"
 
+          echo "=== Location permission configured successfully ==="
+
       - name: Check app
         run: |
+          set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           echo "=== Checking app ==="
