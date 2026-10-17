@@ -122,14 +122,17 @@ class Card(BoxLayout):
 # ============================================================
 
 def format_chart(chart, title="时间局"):
-    """把 paipan.py 返回的 Chart 转成可读文本。"""
+    """将 Chart 对象整理为中文文本，避免显示 Chart(...)。"""
 
     if isinstance(chart, str):
         return chart
 
     if isinstance(chart, dict):
         return json.dumps(
-            chart, ensure_ascii=False, indent=2, default=str
+            chart,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
         )
 
     try:
@@ -144,19 +147,19 @@ def format_chart(chart, title="时间局"):
             title,
             "",
             f"出生时间：{chart.birth:%Y-%m-%d %H:%M}",
-            f"经度：{chart.longitude}",
             f"真太阳时：{chart.true_solar:%Y-%m-%d %H:%M}",
+            f"经度：{chart.longitude}",
             f"性别：{chart.sex}",
             "",
             "四柱",
-            "────────────────",
+            "----------------",
         ]
 
         for p in pillars:
-            lines.append(
-                f"{p.name}：{p.ganzhi}"
-                f"    天干十神：{p.ten_god_gan}"
-            )
+            lines.append(f"{p.name}：{p.ganzhi}")
+            lines.append(f"天干：{p.gan}")
+            lines.append(f"地支：{p.zhi}")
+            lines.append(f"天干十神：{p.ten_god_gan}")
             lines.append(f"纳音：{p.na_yin}")
             lines.append(f"藏干：{'、'.join(p.hidden)}")
             lines.append("")
@@ -166,7 +169,7 @@ def format_chart(chart, title="时间局"):
             f"命宫地支：{chart.life_palace}",
             "",
             "五行统计",
-            "────────────────",
+            "----------------",
         ])
 
         for element in ("木", "火", "土", "金", "水"):
@@ -174,18 +177,26 @@ def format_chart(chart, title="时间局"):
                 f"{element}：{chart.wuxing.get(element, 0)}"
             )
 
-        lines.extend(["", "大运", "────────────────"])
+        lines.extend([
+            "",
+            "大运",
+            "----------------",
+        ])
 
         for item in chart.dayun:
             lines.append(
                 f"第{item.get('序', '')}步："
-                f"{item.get('干支', '')}    "
-                f"约 {item.get('起运岁', '')} 岁起运    "
+                f"{item.get('干支', '')}　"
+                f"{item.get('起运岁', '')}岁起运　"
                 f"{item.get('顺逆', '')}行"
             )
 
         if chart.warnings:
-            lines.extend(["", "注意事项", "────────────────"])
+            lines.extend([
+                "",
+                "注意事项",
+                "----------------",
+            ])
             for warning in chart.warnings:
                 lines.append(f"• {warning}")
 
@@ -197,8 +208,13 @@ def format_chart(chart, title="时间局"):
 
         return "\n".join(lines)
 
-    except Exception:
-        return str(chart)
+    except Exception as exc:
+        # 不再静默退回 str(chart)，避免显示 Chart(...) 原始内容。
+        return (
+            "排盘结果格式化失败\n"
+            f"错误类型：{type(exc).__name__}\n"
+            f"错误详情：{exc}"
+        )
 
 
 def chart_pillars_text(chart):
@@ -336,7 +352,7 @@ class HomeScreen(Screen):
         list_scroll.add_widget(self.list_layout)
         root.add_widget(list_scroll)
 
-        # 底部只放右下角加号
+        # 底部右下角加号
         bottom = BoxLayout(
             size_hint_y=None,
             height=dp(64),
@@ -400,7 +416,7 @@ class HomeScreen(Screen):
             except Exception as exc:
                 result = ""
                 pillars = []
-                error = str(exc)
+                error = f"{type(exc).__name__}: {exc}"
 
             Clock.schedule_once(
                 lambda dt: self.set_current_result(
@@ -462,12 +478,12 @@ class HomeScreen(Screen):
             )
             self.pillars_grid.add_widget(cell)
 
-        # 首页只展示简要信息，完整结果可在详情中查看
-        self.current_result.text = (
-            result.split("五行统计")[0]
-            if "五行统计" in result
-            else result
-        )
+        # 首页显示四柱与基本信息，完整结果在详情页查看
+        if "五行统计" in result:
+            self.current_result.text = result.split("五行统计")[0]
+        else:
+            self.current_result.text = result
+
         self.current_result.texture_update()
         self.current_result.height = max(
             dp(95),
@@ -762,7 +778,11 @@ class DetailScreen(Screen):
                 )
                 result = format_chart(chart, name)
             except Exception as exc:
-                result = f"排盘计算失败：{exc}"
+                result = (
+                    "排盘计算失败\n"
+                    f"错误类型：{type(exc).__name__}\n"
+                    f"错误详情：{exc}"
+                )
 
             Clock.schedule_once(
                 lambda dt: self.set_detail_text(result),
