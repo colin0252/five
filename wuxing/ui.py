@@ -89,7 +89,9 @@ def make_input(**kwargs):
     kwargs.setdefault("background_color", CARD)
     kwargs.setdefault("foreground_color", TEXT)
     kwargs.setdefault("cursor_color", GREEN)
-    kwargs.setdefault("padding", [dp(12), dp(12), dp(12), dp(12)])
+    kwargs.setdefault(
+        "padding", [dp(12), dp(12), dp(12), dp(12)]
+    )
     kwargs.update(font_args())
     return TextInput(**kwargs)
 
@@ -129,10 +131,7 @@ def format_chart(chart, title="时间局"):
 
     if isinstance(chart, dict):
         return json.dumps(
-            chart,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
+            chart, ensure_ascii=False, indent=2, default=str
         )
 
     try:
@@ -177,11 +176,7 @@ def format_chart(chart, title="时间局"):
                 f"{element}：{chart.wuxing.get(element, 0)}"
             )
 
-        lines.extend([
-            "",
-            "大运",
-            "----------------",
-        ])
+        lines.extend(["", "大运", "----------------"])
 
         for item in chart.dayun:
             lines.append(
@@ -192,11 +187,7 @@ def format_chart(chart, title="时间局"):
             )
 
         if chart.warnings:
-            lines.extend([
-                "",
-                "注意事项",
-                "----------------",
-            ])
+            lines.extend(["", "注意事项", "----------------"])
             for warning in chart.warnings:
                 lines.append(f"• {warning}")
 
@@ -209,7 +200,6 @@ def format_chart(chart, title="时间局"):
         return "\n".join(lines)
 
     except Exception as exc:
-        # 不再静默退回 str(chart)，避免显示 Chart(...) 原始内容。
         return (
             "排盘结果格式化失败\n"
             f"错误类型：{type(exc).__name__}\n"
@@ -257,6 +247,7 @@ class HomeScreen(Screen):
             height=dp(48),
             spacing=dp(8),
         )
+
         header.add_widget(
             make_label(
                 "五行排盘",
@@ -265,6 +256,7 @@ class HomeScreen(Screen):
                 color=GREEN,
             )
         )
+
         header.add_widget(
             make_label(
                 "时间与命理",
@@ -273,18 +265,38 @@ class HomeScreen(Screen):
                 halign="right",
             )
         )
+
         root.add_widget(header)
 
         # 当前时间局卡片
+        # 左边竖排“即时局”，右边显示原有排盘内容
         current_card = Card(
-            orientation="vertical",
-            padding=dp(15),
-            spacing=dp(8),
+            orientation="horizontal",
+            padding=dp(12),
+            spacing=dp(10),
             size_hint_y=None,
             height=dp(300),
         )
 
-        current_card.add_widget(
+        current_side_title = make_label(
+            "即\n时\n局",
+            font_size=dp(19),
+            bold=True,
+            color=GOLD,
+            halign="center",
+            valign="middle",
+            size_hint=(None, 1),
+            width=dp(28),
+        )
+        current_card.add_widget(current_side_title)
+
+        # 当前时间局右侧内容
+        current_content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(6),
+        )
+
+        current_content.add_widget(
             make_label(
                 "现在的时间局",
                 font_size=dp(20),
@@ -300,7 +312,7 @@ class HomeScreen(Screen):
             font_size=dp(13),
             height=dp(26),
         )
-        current_card.add_widget(self.current_time_label)
+        current_content.add_widget(self.current_time_label)
 
         self.pillars_grid = GridLayout(
             cols=4,
@@ -308,7 +320,7 @@ class HomeScreen(Screen):
             size_hint_y=None,
             height=dp(84),
         )
-        current_card.add_widget(self.pillars_grid)
+        current_content.add_widget(self.pillars_grid)
 
         self.current_result = make_label(
             "正在计算当前时间局……",
@@ -324,11 +336,54 @@ class HomeScreen(Screen):
             size_hint=(1, 1),
         )
         current_scroll.add_widget(self.current_result)
-        current_card.add_widget(current_scroll)
+        current_content.add_widget(current_scroll)
 
+        current_card.add_widget(current_content)
         root.add_widget(current_card)
 
-        # 保存列表区域
+        # 功能预留区：只显示名称，不实现功能
+        feature_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(76),
+            spacing=dp(10),
+        )
+
+        qimen_card = Card(
+            orientation="vertical",
+            padding=dp(10),
+            card_color=GREEN_LIGHT,
+        )
+        qimen_card.add_widget(
+            make_label(
+                "奇门遁甲",
+                font_size=dp(17),
+                bold=True,
+                color=GREEN,
+                halign="center",
+            )
+        )
+
+        compass_card = Card(
+            orientation="vertical",
+            padding=dp(10),
+            card_color=CARD,
+        )
+        compass_card.add_widget(
+            make_label(
+                "罗盘",
+                font_size=dp(17),
+                bold=True,
+                color=GREEN,
+                halign="center",
+            )
+        )
+
+        feature_row.add_widget(qimen_card)
+        feature_row.add_widget(compass_card)
+        root.add_widget(feature_row)
+
+        # 我的时间局
         root.add_widget(
             make_label(
                 "我的时间局",
@@ -352,7 +407,7 @@ class HomeScreen(Screen):
         list_scroll.add_widget(self.list_layout)
         root.add_widget(list_scroll)
 
-        # 底部右下角加号
+        # 右下角添加按钮
         bottom = BoxLayout(
             size_hint_y=None,
             height=dp(64),
@@ -466,6 +521,7 @@ class HomeScreen(Screen):
                     height=dp(24),
                 )
             )
+
             cell.add_widget(
                 make_label(
                     gz,
@@ -476,9 +532,9 @@ class HomeScreen(Screen):
                     height=dp(42),
                 )
             )
+
             self.pillars_grid.add_widget(cell)
 
-        # 首页显示四柱与基本信息，完整结果在详情页查看
         if "五行统计" in result:
             self.current_result.text = result.split("五行统计")[0]
         else:
@@ -510,6 +566,7 @@ class HomeScreen(Screen):
                 orientation="vertical",
                 spacing=dp(2),
             )
+
             info.add_widget(
                 make_label(
                     name,
@@ -519,6 +576,7 @@ class HomeScreen(Screen):
                     height=dp(30),
                 )
             )
+
             info.add_widget(
                 make_label(
                     time_text,
@@ -527,6 +585,7 @@ class HomeScreen(Screen):
                     height=dp(24),
                 )
             )
+
             card.add_widget(info)
 
             open_button = make_button(
@@ -618,6 +677,7 @@ class AddScreen(Screen):
         form_card.add_widget(
             make_label("名字", bold=True, color=GREEN)
         )
+
         self.name_input = make_input(
             hint_text="例如：我的命盘",
         )
@@ -626,6 +686,7 @@ class AddScreen(Screen):
         form_card.add_widget(
             make_label("时间", bold=True, color=GREEN)
         )
+
         self.time_input = make_input(
             text=datetime.now().strftime("%Y-%m-%d %H:%M"),
             hint_text="YYYY-MM-DD HH:MM",
@@ -689,7 +750,6 @@ class AddScreen(Screen):
 
         home = self.manager.get_screen("home")
         home.add_chart(name, time_text)
-
         self.manager.current = "home"
 
 
