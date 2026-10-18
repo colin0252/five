@@ -20,34 +20,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 下载中文字体
-      - name: Prepare Chinese font
+      # 准备中文字体和 DE421 星历文件
+      - name: Prepare app resources
         run: |
           set -e
+
           mkdir -p "$GITHUB_WORKSPACE/fonts"
+          mkdir -p "$GITHUB_WORKSPACE/ephemeris"
 
           curl -fL --retry 3 \
             'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' \
             -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
 
           test -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
+
+          curl -fL --retry 3 \
+            'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de421.bsp' \
+            -o "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
+
+          test -s "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
+
+          echo "=== Font ==="
           ls -lh "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
+
+          echo "=== DE421 ==="
+          ls -lh "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 安装系统依赖：避免主动升级 pkg-config
       - name: Install system dependencies
         run: |
           set -e
 
-          brew install autoconf automake libtool
-
+          brew install autoconf automake libtool pkg-config
           brew link libtool --force
 
-          echo "=== Check pkg-config ==="
+          echo "=== pkg-config ==="
           if command -v pkg-config >/dev/null 2>&1; then
             pkg-config --version
           elif command -v pkgconf >/dev/null 2>&1; then
@@ -57,9 +68,10 @@ jobs:
             exit 1
           fi
 
-      - name: Install Python dependencies
+      - name: Install build tools
         run: |
           set -e
+
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install "Cython<3.1"
           python -m pip install "kivy>=2.3.0,<2.4.0"
@@ -68,6 +80,7 @@ jobs:
       - name: Check environment
         run: |
           set -e
+
           python --version
           python -m pip --version
           cython --version
@@ -78,54 +91,85 @@ jobs:
       - name: Prepare kivy-ios build directory
         run: |
           set -e
+
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
           rm -rf "$BUILD_DIR"
           mkdir -p "$BUILD_DIR"
+
           echo "Kivy-iOS build directory: $BUILD_DIR"
 
       - name: Build Python3 recipe
         run: |
           set -e
+
           cd "$RUNNER_TEMP/kivy-ios"
           toolchain build python3
 
-      # 编译 iOS 原生桥接组件
       - name: Build Pyobjus recipe
         run: |
           set -e
+
           cd "$RUNNER_TEMP/kivy-ios"
           toolchain build pyobjus
           toolchain status
 
-      - name: Check Python3 recipe
+      - name: Build NumPy recipe
         run: |
           set -e
+
           cd "$RUNNER_TEMP/kivy-ios"
+          toolchain build numpy
           toolchain status
 
       - name: Build Kivy recipe
         run: |
           set -e
+
           cd "$RUNNER_TEMP/kivy-ios"
           toolchain build kivy
+
+      # Skyfield 及其 Python 依赖。
+      # 这一步若与当前 kivy-ios Python 环境不兼容，
+      # 工作流会失败，而不会继续生成不完整 IPA。
+      - name: Install Skyfield dependencies
+        run: |
+          set -e
+
+          cd "$RUNNER_TEMP/kivy-ios"
+
+          toolchain pip3 install skyfield jplephem sgp4 certifi
+
+      - name: Check compiled recipes
+        run: |
+          set -e
+
+          cd "$RUNNER_TEMP/kivy-ios"
+          toolchain status
 
       - name: Create iOS project
         run: |
           set -e
+
           BUILD_DIR="$RUNNER_TEMP/kivy-ios"
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cd "$BUILD_DIR"
           rm -rf "$PROJECT_DIR"
+
           toolchain create colin-app "$GITHUB_WORKSPACE"
 
           test -d "$PROJECT_DIR"
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
+
+          echo "=== App source resources ==="
+          find "$PROJECT_DIR" -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf'
+
           ls -lah "$PROJECT_DIR"
 
       - name: Build iOS app
         run: |
           set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
           cd "$PROJECT_DIR"
 
@@ -142,7 +186,6 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
-      # 将定位权限说明写入最终应用的 Info.plist
       - name: Configure and verify location permission
         run: |
           set -e
@@ -175,32 +218,59 @@ jobs:
             -c "Print :CFBundleIdentifier" \
             "$INFO_PLIST"
 
+      # 检查星历和字体是否真的进入最终 App 包。
+      - name: Verify app resources
+        run: |
+          set -e
+
+          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+
+          test -d "$APP_PATH"
+
+          echo "=== Verify DE421 in app bundle ==="
+          find "$APP_PATH" -name 'de421.bsp' -print
+
+          if ! find "$APP_PATH" -name 'de421.bsp' -print -quit | grep -q .; then
+            echo "ERROR: de421.bsp is missing from the app bundle"
+            exit 1
+          fi
+
+          echo "=== Verify Chinese font ==="
+          find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' -print
+
       - name: Check app
         run: |
           set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+
           test -d "$PROJECT_DIR/build/colin-app.app"
           ls -lah "$PROJECT_DIR/build/colin-app.app"
 
       - name: Package IPA
         run: |
           set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
           cd "$PROJECT_DIR"
 
           rm -rf Payload
           mkdir Payload
+
           cp -R build/colin-app.app Payload/
+
           zip -r colin-app-unsigned.ipa Payload
+
           ls -lh colin-app-unsigned.ipa
 
       - name: Copy IPA to workspace
         run: |
           set -e
+
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
 
           cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
-             "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
+            "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
 
           ls -lh "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
 
