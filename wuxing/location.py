@@ -1,7 +1,9 @@
+
 # wuxing/location.py
 """iOS 原生定位与城市/地址地理编码。"""
 
 import json
+import re
 import threading
 import urllib.parse
 import urllib.request
@@ -9,10 +11,10 @@ import urllib.request
 from kivy.clock import Clock
 from kivy.utils import platform
 
+
 DEFAULT_LATITUDE = None
 DEFAULT_LONGITUDE = None
 
-# 保留原生定位对象，避免被 Python 垃圾回收。
 _LOCATION_STATE = {
     "manager": None,
     "delegate": None,
@@ -22,29 +24,99 @@ _LOCATION_STATE = {
 
 
 def _valid_coordinates(lat, lon):
+    """验证并返回有效的纬度、经度。"""
     lat = float(lat)
     lon = float(lon)
 
-    if not -90 <= lat <= 90:
+    if not (-90 <= lat <= 90):
         raise ValueError("纬度必须在 -90 至 90 之间")
-    if not -180 <= lon <= 180:
+
+    if not (-180 <= lon <= 180):
         raise ValueError("经度必须在 -180 至 180 之间")
+
+    if lat == 0 and lon == 0:
+        raise ValueError("定位返回了无效的坐标")
 
     return lat, lon
 
 
+def _extract_coordinates(location):
+    """
+    从 iOS CLLocation 对象提取坐标。
+
+    优先读取 coordinate 的常规属性；
+    如果 Pyobjus 将结构体转换成 UnknownType，
+    再尝试读取结构体成员；
+    最后尝试从 CLLocation 的描述字符串提取坐标。
+    """
+    errors = []
+
+    # 方法一：尝试直接读取 latitude / longitude。
+    try:
+        coordinate = location.coordinate
+        lat = coordinate.latitude
+        lon = coordinate.longitude
+        return _valid_coordinates(lat, lon)
+    except Exception as exc:
+        errors.append(f"直接读取坐标失败：{exc}")
+
+    # 方法二：Pyobjus 可能把结构体成员命名为 a、b 等。
+    try:
+        coordinate = location.coordinate
+        fields = coordinate.getMembers(only_fields=True)
+
+        if fields and len(fields) >= 2:
+            lat = getattr(coordinate, fields[0])
+            lon = getattr(coordinate, fields[1])
+            return _valid_coordinates(lat, lon)
+    except Exception as exc:
+        errors.append(f"读取结构体成员失败：{exc}")
+
+    # 方法三：从 CLLocation 描述中的 <纬度,经度> 提取。
+    try:
+        description = str(location.description)
+
+        match = re.search(
+            r"<\s*([+-]?\d+(?:\.\d+)?)\s*,\s*"
+            r"([+-]?\d+(?:\.\d+)?)\s*>",
+            description,
+        )
+
+        if match:
+            return _valid_coordinates(
+                match.group(1),
+                match.group(2),
+            )
+
+        errors.append(
+            f"定位描述中未找到坐标：{description}"
+        )
+    except Exception as exc:
+        errors.append(f"读取定位描述失败：{exc}")
+
+    raise ValueError("；".join(errors))
+
+
 def get_location(callback, timeout=25):
     """
+    获取 iPhone 当前定位。
+
     callback(lat, lon, source, error)
 
-    source 为 gps 或 error。
-    定位失败时不再自动回退到北京。
+    成功：
+        callback(纬度, 经度, "gps", None)
+
+    失败：
+        callback(None, None, "error", 错误信息)
+
+    不会自动回退到北京或其他默认位置。
     """
     if platform != "ios":
         callback(
-            None, None, "error",
-            "当前定位实现使用 iOS 原生 Core Location；"
-            "当前平台不是 iOS。",
+            None,
+            None,
+            "error",
+            "当前定位功能需要在 iOS 设备上运行。",
         )
         return
 
@@ -64,18 +136,23 @@ def get_location(callback, timeout=25):
 
             event = state.get("timeout")
             if event is not None:
-                event.cancel()
+                try:
+                    event.cancel()
+                except Exception:
+                    pass
                 state["timeout"] = None
 
-            try:
-                manager = state.get("manager")
-                if manager is not None:
-                    manager.stopUpdatingLocation()
-            except Exception:
-                pass
+            manager_obj = state.get("manager")
+            if manager_obj is not None:
+                try:
+                    manager_obj.stopUpdatingLocation()
+                except Exception:
+                    pass
 
             Clock.schedule_once(
-                lambda _dt: callback(lat, lon, source, error),
+                lambda _dt: callback(
+                    lat, lon, source, error
+                ),
                 0,
             )
 
@@ -84,18 +161,18 @@ def get_location(callback, timeout=25):
             def locationManager_didUpdateLocations_(
                 self, manager, locations
             ):
+                if state["finished"]:
+                    return
+
                 try:
                     count = int(locations.count())
+
                     if count < 1:
                         return
 
                     location = locations.objectAtIndex_(count - 1)
-                    coordinate = location.coordinate
+                    lat, lon = _extract_coordinates(location)
 
-                    lat, lon = _valid_coordinates(
-                        coordinate.latitude,
-                        coordinate.longitude,
-                    )
                     finish(lat, lon, "gps", None)
 
                 except Exception as exc:
@@ -121,15 +198,20 @@ def get_location(callback, timeout=25):
             def locationManager_didChangeAuthorizationStatus_(
                 self, manager, status
             ):
-                # iOS 状态：
-                # 0 未决定，1 受限，2 拒绝，3/4 已授权
                 try:
                     status = int(status)
                 except Exception:
                     return
 
+                # kCLAuthorizationStatusRestricted = 1
+                # kCLAuthorizationStatusDenied = 2
                 if status == 2:
-                    finish(error="定位权限已拒绝，请到 iPhone 设置中允许定位。")
+                    finish(
+                        error=(
+                            "定位权限已拒绝。请在 iPhone 设置中"
+                            "允许五行排盘使用定位。"
+                        )
+                    )
                 elif status == 1:
                     finish(error="系统限制了定位权限。")
 
@@ -144,7 +226,10 @@ def get_location(callback, timeout=25):
 
         state["timeout"] = Clock.schedule_once(
             lambda _dt: finish(
-                error="定位超时。请检查系统定位服务和本 App 的定位权限。"
+                error=(
+                    "定位超时。请检查 iPhone 的定位服务、"
+                    "App 定位权限和网络环境后重试。"
+                )
             ),
             max(1, timeout),
         )
@@ -164,31 +249,36 @@ def get_location(callback, timeout=25):
 
 def resolve_location(query, callback, timeout=12):
     """
-    将城市名或地址解析为坐标。
+    将城市名、地址或纬度/经度解析成坐标。
 
     callback(lat, lon, display_name, error)
 
-    示例输入：
+    示例：
         Los Angeles
         New York, NY, USA
         Taipei
         34.0522, -118.2437
-
-    城市/地址解析使用 OpenStreetMap Nominatim。
     """
     query = str(query or "").strip()
 
     if not query:
-        callback(None, None, "", "请填写城市、地址或纬度,经度。")
+        callback(
+            None,
+            None,
+            "",
+            "请填写城市、地址或纬度,经度。",
+        )
         return
 
-    # 允许直接输入“纬度,经度”，无需联网。
+    # 支持直接输入纬度,经度，不需要网络查询。
     if "," in query:
         parts = [part.strip() for part in query.split(",")]
 
         if len(parts) == 2:
             try:
-                lat, lon = _valid_coordinates(parts[0], parts[1])
+                lat, lon = _valid_coordinates(
+                    parts[0], parts[1]
+                )
                 callback(lat, lon, query, None)
                 return
             except (TypeError, ValueError):
@@ -210,8 +300,7 @@ def resolve_location(query, callback, timeout=12):
             request = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "WuxingPaipan/1.0 "
-                                  "(location lookup)",
+                    "User-Agent": "WuxingPaipan/1.0",
                     "Accept": "application/json",
                 },
             )
@@ -226,29 +315,37 @@ def resolve_location(query, callback, timeout=12):
 
             if not data:
                 raise ValueError(
-                    "没有找到这个城市或地址，请补充州名、国家名，"
+                    "没有找到该城市或地址。请补充州名、国家名，"
                     "或直接输入纬度,经度。"
                 )
 
             item = data[0]
+
             lat, lon = _valid_coordinates(
                 item["lat"],
                 item["lon"],
             )
+
             name = item.get("display_name", query)
 
             Clock.schedule_once(
-                lambda _dt: callback(lat, lon, name, None),
+                lambda _dt: callback(
+                    lat, lon, name, None
+                ),
                 0,
             )
 
         except Exception as exc:
-            message = (
-                f"{type(exc).__name__}: {exc}"
-            )
+            message = f"{type(exc).__name__}: {exc}"
+
             Clock.schedule_once(
-                lambda _dt: callback(None, None, "", message),
+                lambda _dt: callback(
+                    None, None, "", message
+                ),
                 0,
             )
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(
+        target=worker,
+        daemon=True,
+    ).start()
