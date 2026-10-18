@@ -440,7 +440,7 @@ class HomeScreen(Screen):
         main_card.add_widget(content)
         root.add_widget(main_card)
 
-        # 功能占位区
+        # 功能占位区：暂时不实现实际功能
         feature_row = BoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -887,19 +887,33 @@ class HomeScreen(Screen):
 
         self._last_minute_key = minute_key
 
-        # 没有位置时，不将北京或其他默认坐标冒充为用户位置。
-        if self.current_longitude is None:
+        # 纬度和经度都必须有效，不使用虚构的默认位置。
+        if (
+            self.current_latitude is None
+            or self.current_longitude is None
+        ):
             self.birth_label.text = (
                 "排盘时间：" + now.strftime("%Y-%m-%d %H:%M")
             )
-            self.solar_label.text = (
-                "真太阳时：请先设置有效位置"
-            )
+            self.solar_label.text = "真太阳时：请先设置有效位置"
             return
 
-        longitude = float(self.current_longitude)
+        try:
+            latitude = float(self.current_latitude)
+            longitude = float(self.current_longitude)
 
-        # 每次启动一个新的排盘任务，旧任务完成后不能覆盖新结果。
+            if not -90 <= latitude <= 90:
+                raise ValueError("纬度超出范围")
+            if not -180 <= longitude <= 180:
+                raise ValueError("经度超出范围")
+
+            timezone_info = now.astimezone().tzinfo
+
+        except (TypeError, ValueError) as exc:
+            self.solar_label.text = f"位置无效：{exc}"
+            return
+
+        # 新任务开始后，旧任务的结果不能覆盖新结果。
         self._chart_request_id += 1
         request_id = self._chart_request_id
 
@@ -910,11 +924,19 @@ class HomeScreen(Screen):
 
         def work():
             try:
-                chart = build_chart(now, longitude, "男")
+                chart = build_chart(
+                    now,
+                    longitude,
+                    "男",
+                    latitude=latitude,
+                    timezone_info=timezone_info,
+                )
+
                 pillars = get_pillars(chart)
                 birth = chart.birth.strftime("%Y-%m-%d %H:%M")
                 solar = chart.true_solar.strftime("%Y-%m-%d %H:%M")
                 error = None
+
             except Exception as exc:
                 pillars = []
                 birth = ""
@@ -1262,7 +1284,14 @@ class DetailScreen(Screen):
         name = item.get("name", "未命名时间局")
         time_text = item.get("time", "")
 
+        # 优先使用保存时间局时记录的位置。
+        latitude = item.get("latitude")
         longitude = item.get("longitude")
+
+        # 兼容旧记录：没有保存坐标时使用首页当前位置。
+        if latitude is None:
+            latitude = home.current_latitude
+
         if longitude is None:
             longitude = home.current_longitude
 
@@ -1271,7 +1300,7 @@ class DetailScreen(Screen):
         self.detail_text.text = "正在计算排盘结果……"
         self.detail_text.height = dp(400)
 
-        if longitude is None:
+        if latitude is None or longitude is None:
             self.detail_text.text = (
                 "尚未设置有效位置。\n"
                 "请返回首页，获取定位或手动设置城市/地址。"
@@ -1283,10 +1312,28 @@ class DetailScreen(Screen):
                 birth_time = datetime.strptime(
                     time_text, "%Y-%m-%d %H:%M"
                 )
+
+                latitude_value = float(latitude)
+                longitude_value = float(longitude)
+
+                if not -90 <= latitude_value <= 90:
+                    raise ValueError("纬度超出范围")
+                if not -180 <= longitude_value <= 180:
+                    raise ValueError("经度超出范围")
+
+                # 目前将输入的时间按设备本地时区解释。
+                timezone_info = birth_time.astimezone().tzinfo
+
                 chart = build_chart(
-                    birth_time, float(longitude), "男"
+                    birth_time,
+                    longitude_value,
+                    "男",
+                    latitude=latitude_value,
+                    timezone_info=timezone_info,
                 )
+
                 result = format_chart(chart, name)
+
             except Exception as exc:
                 result = (
                     "排盘计算失败\n"
