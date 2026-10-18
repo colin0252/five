@@ -1,100 +1,154 @@
+
 # wuxing/calendar.py
 """历法基础计算：儒略日、太阳黄经、节气、干支及真太阳时。"""
-from datetime import datetime, timedelta, timezone
+
 import math
+from datetime import datetime, timedelta, timezone
+
 from .rules import GAN, ZHI, ganzhi
+
 UTC = timezone.utc
+
+
 # --------------------------------------------------
 # 时间处理
 # --------------------------------------------------
+
 def _as_utc(dt):
     """
     转换为带时区的 UTC datetime。
-    约定：
-    - 带时区 datetime：转换为 UTC。
-    - 不带时区 datetime：视为 UTC 时间。
-    
-    注意：当地出生时间必须先结合出生地时区，
-    再传给需要绝对时刻的天文计算函数。
+
+    带时区时间转换为 UTC；
+    不带时区时间按 UTC 解释。
     """
     if not isinstance(dt, datetime):
         raise TypeError("时间必须是 datetime 对象。")
+
     if dt.tzinfo is None or dt.utcoffset() is None:
         return dt.replace(tzinfo=UTC)
+
     return dt.astimezone(UTC)
+
+
 def _wall_time(dt):
-    """提取 datetime 当前显示的钟表时间，不转换时区。"""
+    """提取当前显示的当地钟表时间，不转换时区。"""
     if not isinstance(dt, datetime):
         raise TypeError("时间必须是 datetime 对象。")
+
     return dt.replace(tzinfo=None)
+
+
 def _as_utc_naive(dt):
-    """将时间转换为不带时区的 UTC datetime，供旧接口兼容。"""
+    """转换为不带时区的 UTC datetime，兼容旧接口。"""
     return _as_utc(dt).replace(tzinfo=None)
+
+
+def _resolve_timezone(timezone_info):
+    """解析 IANA 时区名称或时区对象。"""
+    if isinstance(timezone_info, str):
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        name = timezone_info.strip()
+        if not name:
+            raise ValueError("时区名称不能为空。")
+
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+            raise ValueError(f"无法识别时区：{name}") from exc
+
+    if timezone_info is None:
+        raise ValueError("缺少时区信息。")
+
+    if not hasattr(timezone_info, "utcoffset"):
+        raise TypeError("timezone_info 必须是时区名称或时区对象。")
+
+    return timezone_info
+
+
 # --------------------------------------------------
 # 儒略日
 # --------------------------------------------------
+
 def julian_day(dt):
     """计算 UTC 时刻对应的儒略日。"""
     dt = _as_utc(dt)
-    y = dt.year
-    m = dt.month
-    d = (
+
+    year = dt.year
+    month = dt.month
+
+    day = (
         dt.day
         + dt.hour / 24
         + dt.minute / 1440
         + dt.second / 86400
         + dt.microsecond / 86400000000
     )
-    if m <= 2:
-        y -= 1
-        m += 12
-    a = y // 100
+
+    if month <= 2:
+        year -= 1
+        month += 12
+
+    a = year // 100
     b = 2 - a + a // 4
+
     return (
-        int(365.25 * (y + 4716))
-        + int(30.6001 * (m + 1))
-        + d
+        int(365.25 * (year + 4716))
+        + int(30.6001 * (month + 1))
+        + day
         + b
         - 1524.5
     )
+
+
 # --------------------------------------------------
 # 太阳黄经
 # --------------------------------------------------
+
 def solar_longitude(dt):
     """
     近似计算太阳地心视黄经，单位为度。
-    输入可以是带时区或不带时区的 datetime。
-    带时区时间会先转换为 UTC。
-    不带时区时间按 UTC 解释。
+
+    带时区输入转换为 UTC；
+    不带时区输入按 UTC 解释。
     """
     jd = julian_day(dt)
     t = (jd - 2451545.0) / 36525.0
-    l0 = (
+
+    mean_longitude = (
         280.46646
         + 36000.76983 * t
         + 0.0003032 * t * t
-    ) % 360
-    m = math.radians(
+    ) % 360.0
+
+    mean_anomaly = math.radians(
         (
             357.52911
             + 35999.05029 * t
             - 0.0001537 * t * t
-        ) % 360
+        ) % 360.0
     )
-    c = (
+
+    equation_center = (
         (1.914602 - 0.004817 * t - 0.000014 * t * t)
-        * math.sin(m)
+        * math.sin(mean_anomaly)
         + (0.019993 - 0.000101 * t)
-        * math.sin(2 * m)
-        + 0.000289 * math.sin(3 * m)
+        * math.sin(2 * mean_anomaly)
+        + 0.000289 * math.sin(3 * mean_anomaly)
     )
-    return (l0 + c) % 360
+
+    return (mean_longitude + equation_center) % 360.0
+
+
 def _angle_difference(angle, target):
     """返回角度与目标角度之间的有符号最短差值。"""
-    return (angle - target + 180) % 360 - 180
+    return (angle - target + 180.0) % 360.0 - 180.0
+
+
 # --------------------------------------------------
 # 搜索太阳黄经交点
 # --------------------------------------------------
+
 def find_longitude_time(
     local_dt,
     target,
@@ -103,178 +157,252 @@ def find_longitude_time(
 ):
     """
     搜索太阳黄经经过指定角度的时刻。
-    参数：
-        local_dt:
-            搜索起点。建议传入带时区 datetime；
-            不带时区的输入按 UTC 解释。
-        target:
-            目标太阳黄经，单位为度。
-        direction:
-            1 向未来搜索，-1 向过去搜索。
-        max_days:
-            最大搜索天数。
-    返回：
-        找到时返回 datetime，未找到时返回 None。
-    返回时间使用 UTC 时区。
+
+    direction=1：向未来搜索。
+    direction=-1：向过去搜索。
+
+    返回 UTC datetime；未找到时返回 None。
+    不带时区的输入按 UTC 解释。
     """
     if not isinstance(local_dt, datetime):
         raise TypeError("local_dt 必须是 datetime 对象。")
+
     try:
-        target = float(target) % 360
+        target = float(target)
     except (TypeError, ValueError) as exc:
         raise ValueError("target 必须是有效角度。") from exc
+
+    if not math.isfinite(target):
+        raise ValueError("target 必须是有限角度。")
+
+    target %= 360.0
+
     if direction not in (-1, 1):
         raise ValueError("direction 必须为 1 或 -1。")
-    if max_days <= 0:
-        raise ValueError("max_days 必须大于 0。")
+
+    try:
+        max_days = float(max_days)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_days 必须是正数。") from exc
+
+    if not math.isfinite(max_days) or max_days <= 0:
+        raise ValueError("max_days 必须是有限正数。")
+
     start = _as_utc(local_dt)
     step = timedelta(hours=6)
-    max_steps = int(max_days * 4) + 1
-    t = start
+    max_steps = math.ceil(max_days * 4)
+
+    current_time = start
     previous = _angle_difference(
-        solar_longitude(t),
+        solar_longitude(current_time),
         target,
     )
+
+    # 起点恰好位于目标角度时，直接返回起点。
+    if abs(previous) < 1e-10:
+        return current_time
+
     for _ in range(max_steps):
-        next_t = t + direction * step
+        next_time = current_time + direction * step
+
         current = _angle_difference(
-            solar_longitude(next_t),
+            solar_longitude(next_time),
             target,
         )
+
         crossed = (
-            previous == 0
-            or current == 0
+            abs(current) < 1e-10
             or (
                 previous * current < 0
-                and abs(current - previous) < 5
+                and abs(current - previous) < 5.0
             )
         )
+
         if crossed:
-            lo = min(t, next_t)
-            hi = max(t, next_t)
+            lo = min(current_time, next_time)
+            hi = max(current_time, next_time)
+
             left_value = _angle_difference(
                 solar_longitude(lo),
                 target,
             )
-            for _ in range(48):
+
+            right_value = _angle_difference(
+                solar_longitude(hi),
+                target,
+            )
+
+            if abs(left_value) < 1e-10:
+                return lo
+
+            if abs(right_value) < 1e-10:
+                return hi
+
+            # 二分法细化交点。
+            for _ in range(50):
                 mid = lo + (hi - lo) / 2
+
                 mid_value = _angle_difference(
                     solar_longitude(mid),
                     target,
                 )
-                if left_value == 0:
-                    hi = lo
-                    break
+
+                if abs(mid_value) < 1e-10:
+                    return mid
+
                 if left_value * mid_value <= 0:
                     hi = mid
+                    right_value = mid_value
                 else:
                     lo = mid
                     left_value = mid_value
+
             return lo + (hi - lo) / 2
-        t = next_t
+
+        current_time = next_time
         previous = current
+
     return None
+
+
 # --------------------------------------------------
 # 二十四节气
 # --------------------------------------------------
+
 def term_events(year):
     """
     获取指定 UTC 公历年份内的二十四节气黄经交点。
+
     返回：
         [(太阳黄经角度, UTC datetime), ...]
-    这里返回的是 UTC 绝对时刻，不是出生地当地钟表时间。
     """
+    if not isinstance(year, int) or isinstance(year, bool):
+        raise TypeError("year 必须是整数年份。")
+
+    if not 1 <= year < 9999:
+        raise ValueError("year 超出支持范围。")
+
     start = datetime(year, 1, 1, tzinfo=UTC)
     end = datetime(year + 1, 1, 1, tzinfo=UTC)
-    out = []
+
+    events = []
+
     for k in range(24):
         target = (k * 15) % 360
+
         event = find_longitude_time(
             start,
             target,
             direction=1,
             max_days=370,
         )
+
         if event is not None and start <= event < end:
-            out.append((target, event))
-    out.sort(key=lambda item: item[1])
-    return out
+            events.append((target, event))
+
+    events.sort(key=lambda item: item[1])
+    return events
+
+
 def recent_terms(dt, count=12):
-    """
-    返回 dt 之前最近的 count 个节气事件。
-    dt 可以带时区或不带时区。
-    比较前统一转换成 UTC。
-    """
+    """返回 dt 之前最近的 count 个节气事件。"""
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise TypeError("count 必须是整数。")
+
     if count <= 0:
         return []
+
     target_time = _as_utc(dt)
     events = []
+
     for year in (
         target_time.year - 1,
         target_time.year,
         target_time.year + 1,
     ):
-        events.extend(term_events(year))
+        if 1 <= year < 9999:
+            events.extend(term_events(year))
+
     events.sort(key=lambda item: item[1])
+
     previous = [
         item for item in events
         if item[1] <= target_time
     ]
+
     return previous[-count:]
+
+
 # --------------------------------------------------
 # 日柱与时支
 # --------------------------------------------------
+
 def adjusted_date_for_day_pillar(dt):
     """按子初换日口径处理日柱日期。"""
     wall = _wall_time(dt)
+
     if wall.hour >= 23:
         return wall.date() + timedelta(days=1)
+
     return wall.date()
+
+
 def day_ganzhi(dt):
     """
-    计算日干支，采用 2000-01-07 为甲子日的基准。
-    日柱以出生地当地钟表日期为依据，
-    因此传入带时区时间时，不先转换成 UTC 日期。
+    计算日干支。
+
+    以 2000-01-07 为甲子日基准。
+    使用传入时间显示的当地日期，不先转换为 UTC 日期。
     """
     adjusted_date = adjusted_date_for_day_pillar(dt)
     base_date = datetime(2000, 1, 7).date()
     delta = (adjusted_date - base_date).days
+
     return ganzhi(delta % 60)
+
+
 def branch_for_hour(hour, minute=0):
     """根据时、分计算时支。"""
     hour = int(hour)
     minute = int(minute)
+
     if not 0 <= hour <= 23:
         raise ValueError("小时必须在 0 至 23 之间。")
+
     if not 0 <= minute <= 59:
         raise ValueError("分钟必须在 0 至 59 之间。")
+
     total = hour * 60 + minute
+
     if total >= 23 * 60 or total < 60:
         return "子"
+
     index = ((total - 60) // 120) + 1
     return ZHI[index % 12]
+
+
 # --------------------------------------------------
 # 均时差与真太阳时备用算法
 # --------------------------------------------------
+
 def equation_of_time_minutes(dt):
-    """
-    使用常见近似公式计算均时差，单位为分钟。
-    这是备用近似算法，不替代 Skyfield 星历算法。
-    """
+    """使用常见近似公式计算均时差，单位为分钟。"""
     dt = _as_utc(dt)
+
     day_of_year = dt.timetuple().tm_yday
-    year_length = (
-        366 if _is_leap_year(dt.year) else 365
-    )
+    year_length = 366 if _is_leap_year(dt.year) else 365
+
     hour = (
         dt.hour
         + dt.minute / 60
         + dt.second / 3600
     )
+
     gamma = (
         2 * math.pi / year_length
         * (day_of_year - 1 + (hour - 12) / 24)
     )
+
     return 229.18 * (
         0.000075
         + 0.001868 * math.cos(gamma)
@@ -282,148 +410,164 @@ def equation_of_time_minutes(dt):
         - 0.014615 * math.cos(2 * gamma)
         - 0.040849 * math.sin(2 * gamma)
     )
+
+
 def _is_leap_year(year):
     """判断公历闰年。"""
     return year % 4 == 0 and (
         year % 100 != 0 or year % 400 == 0
     )
+
+
 def true_solar_time(local_dt, longitude, timezone_info=None):
     """
     备用真太阳时近似计算。
+
     经度东正西负。
-    local_dt:
-        出生地当地钟表时间。
-    timezone_info:
-        出生地时区对象或时区名称。
-        如果 local_dt 已带时区，则优先使用它自身的时区。
-    正式排盘应使用 astronomy.solar_time 中的
-    Skyfield + DE421 算法。
+    正式排盘优先使用 astronomy.solar_time 中的星历算法。
     """
+    if not isinstance(local_dt, datetime):
+        raise TypeError("local_dt 必须是 datetime 对象。")
+
     try:
         longitude = float(longitude)
     except (TypeError, ValueError) as exc:
         raise ValueError("经度必须是有效数字。") from exc
-    if not -180 <= longitude <= 180:
-        raise ValueError("经度必须在 -180 至 180 度之间。")
-    if not isinstance(local_dt, datetime):
-        raise TypeError("local_dt 必须是 datetime 对象。")
-    if (
-        local_dt.tzinfo is None
-        or local_dt.utcoffset() is None
-    ):
+
+    if not math.isfinite(longitude) or not -180 <= longitude <= 180:
+        raise ValueError("经度必须是 -180 至 180 度之间的有效数字。")
+
+    if local_dt.tzinfo is None or local_dt.utcoffset() is None:
         if timezone_info is None:
             raise ValueError(
                 "计算真太阳时需要出生地时区，不能使用设备时区代替。"
             )
-        if isinstance(timezone_info, str):
-            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-            try:
-                timezone_info = ZoneInfo(timezone_info)
-            except (ZoneInfoNotFoundError, ValueError) as exc:
-                raise ValueError(
-                    f"无法识别出生地时区：{timezone_info}"
-                ) from exc
-        aware_dt = local_dt.replace(tzinfo=timezone_info)
+
+        timezone_obj = _resolve_timezone(timezone_info)
+        aware_dt = local_dt.replace(tzinfo=timezone_obj)
     else:
         aware_dt = local_dt
+
     offset = aware_dt.utcoffset()
+
     if offset is None:
         raise ValueError("无法确定当地时间的 UTC 偏移。")
-    timezone_hours = offset.total_seconds() / 3600
+
+    timezone_hours = offset.total_seconds() / 3600.0
+
     correction_minutes = (
         equation_of_time_minutes(aware_dt)
         + 4 * longitude
         - 60 * timezone_hours
     )
+
     wall_time = aware_dt.replace(tzinfo=None)
-    return wall_time + timedelta(
-        minutes=correction_minutes
-    )
+
+    return wall_time + timedelta(minutes=correction_minutes)
+
+
 # --------------------------------------------------
 # 年柱与月柱
 # --------------------------------------------------
+
 def year_ganzhi_and_start(dt, timezone_info=None):
     """
     以立春（太阳黄经 315 度）作为干支年分界。
-    带时区 datetime：
-        直接与 UTC 立春时刻比较。
-    不带时区 datetime：
-        如果提供 timezone_info，则按该时区解释；
-        否则为兼容旧接口，按 UTC 解释。
+
+    关键约定：
+    - 出生地当地年份用于确定要搜索哪一年的立春；
+    - UTC 绝对时刻用于比较出生时刻和立春时刻；
+    - 返回的立春时刻为 UTC datetime。
+
     返回：
-        (年干支, 立春时刻)
-    立春时刻返回 UTC datetime。
+        (年干支, 该当地年份的立春时刻)
     """
     if not isinstance(dt, datetime):
         raise TypeError("dt 必须是 datetime 对象。")
-    if (
-        dt.tzinfo is None
-        or dt.utcoffset() is None
-    ) and timezone_info is not None:
-        if isinstance(timezone_info, str):
-            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-            try:
-                timezone_info = ZoneInfo(timezone_info)
-            except (ZoneInfoNotFoundError, ValueError) as exc:
-                raise ValueError(
-                    f"无法识别出生地时区：{timezone_info}"
-                ) from exc
-        aware_dt = dt.replace(tzinfo=timezone_info)
+
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        if timezone_info is not None:
+            timezone_obj = _resolve_timezone(timezone_info)
+            aware_dt = dt.replace(tzinfo=timezone_obj)
+        else:
+            # 兼容旧接口：无时区且未指定时区时按 UTC 解释。
+            aware_dt = dt.replace(tzinfo=UTC)
     else:
         aware_dt = dt
+
+    # 不能用 UTC 年份替代当地出生年份。
+    # 例如当地时间与 UTC 跨年时，仍需查当地年份的立春。
+    local_year = aware_dt.year
     instant = _as_utc(aware_dt)
-    start = datetime(
-        instant.year,
+
+    year_start = datetime(
+        local_year,
         1,
         1,
         tzinfo=UTC,
     )
+
     li_chun = find_longitude_time(
-        start,
-        315,
+        year_start,
+        315.0,
         direction=1,
         max_days=370,
     )
-    if li_chun is not None and instant < li_chun:
-        year = instant.year - 1
-    else:
-        year = instant.year
-    return ganzhi((year - 4) % 60), li_chun
+
+    if li_chun is None:
+        raise ValueError(
+            f"无法计算 {local_year} 年的立春时刻。"
+        )
+
+    ganzhi_year = (
+        local_year - 1
+        if instant < li_chun
+        else local_year
+    )
+
+    return ganzhi((ganzhi_year - 4) % 60), li_chun
+
+
 def month_info(dt, year_gan, timezone_info=None):
     """
-    根据太阳黄经估算节气月支与月干。
+    根据太阳黄经计算节气月支与月干。
+
     315° 为寅月起点，此后每 30° 切换一月。
-    带时区 datetime 会根据其绝对时刻计算太阳黄经。
-    对不带时区的当地时间，可传入 timezone_info。
+
     返回：
         (月干, 月支, 太阳黄经)
     """
     if not isinstance(dt, datetime):
         raise TypeError("dt 必须是 datetime 对象。")
-    if (
-        dt.tzinfo is None
-        or dt.utcoffset() is None
-    ) and timezone_info is not None:
-        if isinstance(timezone_info, str):
-            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-            try:
-                timezone_info = ZoneInfo(timezone_info)
-            except (ZoneInfoNotFoundError, ValueError) as exc:
-                raise ValueError(
-                    f"无法识别出生地时区：{timezone_info}"
-                ) from exc
-        calculation_time = dt.replace(tzinfo=timezone_info)
+
+    if year_gan not in GAN:
+        raise ValueError(f"无效的年干：{year_gan!r}")
+
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        if timezone_info is not None:
+            timezone_obj = _resolve_timezone(timezone_info)
+            calculation_time = dt.replace(tzinfo=timezone_obj)
+        else:
+            # 兼容旧接口：未指定时区时按 UTC 解释。
+            calculation_time = dt.replace(tzinfo=UTC)
     else:
         calculation_time = dt
+
     longitude = solar_longitude(calculation_time)
-    x = longitude
-    if x < 315:
-        x += 360
+
+    adjusted_longitude = longitude
+
+    if adjusted_longitude < 315.0:
+        adjusted_longitude += 360.0
+
     index = int(
-        math.floor((x - 315) / 30)
+        math.floor((adjusted_longitude - 315.0) / 30.0)
     ) % 12
+
     branch = ZHI[(2 + index) % 12]
+
     from .rules import month_gan
+
     return (
         month_gan(year_gan, branch),
         branch,
