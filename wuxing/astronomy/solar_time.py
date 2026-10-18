@@ -138,7 +138,7 @@ def calc_true_solar_time(
         earth = ephemeris["earth"]
         sun = ephemeris["sun"]
 
-        # Skyfield 需要绝对时刻，因此先转换为 UTC。
+        # Skyfield 使用绝对时刻，因此先转换为 UTC。
         utc_datetime = local_datetime.astimezone(timezone.utc)
         sky_time = timescale.from_datetime(utc_datetime)
 
@@ -148,7 +148,7 @@ def calc_true_solar_time(
             longitude_degrees=longitude,
         )
 
-        # 计算观测者看到的太阳视位置。
+        # 计算观测地点看到的太阳视位置。
         apparent_sun = (
             observer
             .at(sky_time)
@@ -156,18 +156,18 @@ def calc_true_solar_time(
             .apparent()
         )
 
-        # 直接获取观测地点的太阳时角。
-        # hadec() 返回时角、赤纬和距离。
+        # 获取太阳相对当地子午线的时角。
+        # Skyfield 返回的时角范围为 -12 至 +12 小时。
         hour_angle, _, _ = apparent_sun.hadec()
 
         # 太阳过当地子午线时，真太阳时约为 12:00。
-        # 时角以小时表示，正负范围由 Skyfield 处理。
+        # 此值允许落在午夜前后，不提前强制取模。
         apparent_solar_minutes = (
             12.0 * 60.0
             + hour_angle.hours * 60.0
         )
 
-        # 输入当地钟表时间，不改变原有的墙上时间日期。
+        # 当地钟表时间，不含时区信息。
         wall_time = local_datetime.replace(tzinfo=None)
 
         wall_minutes = (
@@ -177,19 +177,40 @@ def calc_true_solar_time(
             + wall_time.microsecond / 60000000.0
         )
 
-        # 计算真太阳时相对当地钟表时间的校正量。
+        # 计算真太阳时相对钟表时间的原始校正量。
         correction_minutes = (
             apparent_solar_minutes - wall_minutes
         )
 
-        # 选择最接近 0 的等价日内校正值，
-        # 避免午夜附近出现整天跳变。
-        while correction_minutes > 720.0:
-            correction_minutes -= 1440.0
+        # 估算合理的校正范围：
+        # 经度每度约对应 4 分钟；
+        # 当地时区偏移需要从经度对应的太阳时中扣除。
+        utc_offset = local_datetime.utcoffset()
 
-        while correction_minutes < -720.0:
-            correction_minutes += 1440.0
+        if utc_offset is None:
+            raise SolarTimeError(
+                "无法获取出生时间的 UTC 时区偏移。"
+            )
 
+        utc_offset_minutes = (
+            utc_offset.total_seconds() / 60.0
+        )
+
+        expected_correction = (
+            longitude * 4.0 - utc_offset_minutes
+        )
+
+        # 太阳时角以 24 小时为周期。
+        # 选择最接近合理经度/时区校正量的等价结果，
+        # 而不是一律把校正值限制在正负 12 小时内。
+        correction_minutes += 1440.0 * round(
+            (
+                expected_correction
+                - correction_minutes
+            ) / 1440.0
+        )
+
+        # 应用校正量，允许真太阳时跨日。
         result = wall_time + timedelta(
             minutes=correction_minutes
         )
