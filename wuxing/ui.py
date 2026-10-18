@@ -2,8 +2,10 @@
 # wuxing/ui.py
 import os
 import json
+import re
 from datetime import datetime
 from threading import Thread
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -21,7 +23,7 @@ from kivy.uix.widget import Widget
 from kivy.uix.popup import Popup
 
 from .paipan import build_chart
-from .location import get_location, resolve_location
+from .location import get_location, resolve_location, get_timezone
 
 
 # ============================================================
@@ -124,6 +126,30 @@ class Card(BoxLayout):
     def update_bg(self, *_):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
+
+
+def safe_zone(timezone_name):
+    """将时区名称转换为 ZoneInfo；不可用时返回 None。"""
+    if not timezone_name or not isinstance(timezone_name, str):
+        return None
+
+    try:
+        return ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def valid_coordinates(latitude, longitude):
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (TypeError, ValueError):
+        return False
+
+    return (
+        -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    )
 
 
 # ============================================================
@@ -238,14 +264,15 @@ class HomeScreen(Screen):
 
         self.saved_charts = self.load_saved_charts()
 
-        # 没有取得定位时不假装用户在北京。
         self.current_latitude = None
         self.current_longitude = None
         self.location_name = "尚未设置位置"
         self.location_source = "none"
+        self.timezone_name = None
         self.location_error = None
 
         self._location_requesting = False
+        self._timezone_requesting = False
         self._chart_request_id = 0
         self._last_minute_key = None
         self._clock_event = None
@@ -324,7 +351,6 @@ class HomeScreen(Screen):
             spacing=dp(6),
         )
 
-        # 当前系统时间独立刷新，不依赖排盘是否完成
         self.now_label = make_label(
             "当前时间：正在读取……",
             font_size=dp(13),
@@ -383,7 +409,6 @@ class HomeScreen(Screen):
 
         content.add_widget(self.pillars_grid)
 
-        # 时间、真太阳时、位置
         self.birth_label = make_label(
             "排盘时间：等待计算",
             font_size=dp(11),
@@ -440,7 +465,7 @@ class HomeScreen(Screen):
         main_card.add_widget(content)
         root.add_widget(main_card)
 
-        # 功能占位区：暂时不实现实际功能
+        # 功能占位区：暂不实现实际功能
         feature_row = BoxLayout(
             orientation="horizontal",
             size_hint_y=None,
@@ -551,7 +576,7 @@ class HomeScreen(Screen):
         self.update_location_label()
 
     # --------------------------------------------------------
-    # 本地位置设置保存
+    # 位置与时区保存
     # --------------------------------------------------------
 
     def load_location(self):
@@ -571,7 +596,7 @@ class HomeScreen(Screen):
                 lat = float(lat)
                 lon = float(lon)
 
-                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                if valid_coordinates(lat, lon):
                     self.current_latitude = lat
                     self.current_longitude = lon
                     self.location_name = data.get(
@@ -580,6 +605,8 @@ class HomeScreen(Screen):
                     self.location_source = data.get(
                         "source", "manual"
                     )
+                    self.timezone_name = data.get("timezone")
+
         except Exception as exc:
             print(f"[Location] 读取位置失败：{exc}")
 
@@ -591,6 +618,7 @@ class HomeScreen(Screen):
             "longitude": self.current_longitude,
             "name": self.location_name,
             "source": self.location_source,
+            "timezone": self.timezone_name,
         }
 
         temp_path = self.location_path + ".tmp"
@@ -618,10 +646,78 @@ class HomeScreen(Screen):
                 f"经度 {self.current_longitude:.4f}°"
             )
 
+            if self.timezone_name:
+                text += f"\n时区：{self.timezone_name}"
+            else:
+                text += "\n时区：正在获取或尚未设置"
+
         if self.location_error:
             text += f"\n提示：{self.location_error}"
 
         self.location_label.text = text
+
+    def request_timezone(self, lat, lon):
+        """异步获取坐标对应的 IANA 时区。"""
+        if not valid_coordinates(lat, lon):
+            self.location_error = "无法获取时区：坐标无效。"
+            self.update_location_label()
+            return
+
+        self._timezone_requesting = True
+        self.location_error = None
+        self.update_location_label()
+
+        def callback(timezone_name, error):
+            def apply_result(_dt):
+                self._timezone_requesting = False
+
+                if error or not timezone_name:
+                    self.location_error = (
+                        "获取时区失败："
+                        + str(error or "服务没有返回时区")
+                    )
+                    self.update_location_label()
+                    return
+
+                timezone_name = str(timezone_name).strip()
+
+                if safe_zone(timezone_name) is None:
+                    self.location_error = (
+                        "已收到时区名称，但本机时区数据库不可用："
+                        + timezone_name
+                    )
+                    self.update_location_label()
+                    return
+
+                # 如果定位在请求期间已改变，不应用旧请求的时区。
+                if (
+                    self.current_latitude is None
+                    or self.current_longitude is None
+                    or abs(float(self.current_latitude) - float(lat)) > 0.0001
+                    or abs(float(self.current_longitude) - float(lon)) > 0.0001
+                ):
+                    return
+
+                self.timezone_name = timezone_name
+
+                try:
+                    self.save_location()
+                except Exception as exc:
+                    print(f"[Location] 保存时区失败：{exc}")
+
+                self.update_location_label()
+                self.refresh_current(force=True)
+
+            Clock.schedule_once(apply_result, 0)
+
+        try:
+            get_timezone(lat, lon, callback, timeout=12)
+        except Exception as exc:
+            self._timezone_requesting = False
+            self.location_error = (
+                f"请求时区失败：{type(exc).__name__}: {exc}"
+            )
+            self.update_location_label()
 
     # --------------------------------------------------------
     # 设备定位
@@ -674,10 +770,9 @@ class HomeScreen(Screen):
             lat = float(lat)
             lon = float(lon)
 
-            if not -90 <= lat <= 90:
-                raise ValueError("纬度超出范围")
-            if not -180 <= lon <= 180:
-                raise ValueError("经度超出范围")
+            if not valid_coordinates(lat, lon):
+                raise ValueError("坐标超出范围")
+
         except (TypeError, ValueError) as exc:
             self.location_error = f"定位坐标无效：{exc}"
             self.update_location_label()
@@ -685,8 +780,9 @@ class HomeScreen(Screen):
 
         self.current_latitude = lat
         self.current_longitude = lon
-        self.location_source = source or "gps"
+        self.location_source = source or "device"
         self.location_name = "iPhone 设备定位"
+        self.timezone_name = None
         self.location_error = None
 
         try:
@@ -695,7 +791,7 @@ class HomeScreen(Screen):
             print(f"[Location] 保存位置失败：{exc}")
 
         self.update_location_label()
-        self.refresh_current(force=True)
+        self.request_timezone(lat, lon)
 
     # --------------------------------------------------------
     # 手动设置城市、地址或坐标
@@ -710,44 +806,23 @@ class HomeScreen(Screen):
 
         content.add_widget(
             make_label(
-                "输入城市、完整地址，或直接输入纬度,经度",
+                "输入城市、完整地址，或输入纬度,经度",
                 font_size=dp(13),
                 color=MUTED,
                 height=dp(34),
             )
         )
 
-        current_text = ""
-        if (
-            self.current_latitude is not None
-            and self.current_longitude is not None
-        ):
-            current_text = (
-                f"{self.current_latitude:.6f}, "
-                f"{self.current_longitude:.6f}"
-            )
-
         query_input = make_input(
-            text="",
             hint_text="例如 Los Angeles, CA, USA",
         )
         content.add_widget(query_input)
-
-        if current_text:
-            content.add_widget(
-                make_label(
-                    f"当前坐标：{current_text}",
-                    font_size=dp(11),
-                    color=MUTED,
-                    height=dp(24),
-                )
-            )
 
         message = make_label(
             "城市/地址解析需要网络连接。",
             font_size=dp(12),
             color=MUTED,
-            height=dp(40),
+            height=dp(44),
         )
         content.add_widget(message)
 
@@ -768,6 +843,28 @@ class HomeScreen(Screen):
             message.text = "正在解析位置……"
             resolve_button.disabled = True
 
+            # 支持手动输入“纬度,经度”，不必经过地名解析。
+            coord_match = re.fullmatch(
+                r"\s*(-?\d+(?:\.\d+)?)\s*[,，]\s*"
+                r"(-?\d+(?:\.\d+)?)\s*",
+                query,
+            )
+
+            if coord_match:
+                lat_value = float(coord_match.group(1))
+                lon_value = float(coord_match.group(2))
+
+                if not valid_coordinates(lat_value, lon_value):
+                    resolve_button.disabled = False
+                    message.text = "坐标无效，请检查纬度和经度。"
+                    return
+
+                self.apply_manual_location(
+                    lat_value, lon_value, query
+                )
+                popup.dismiss()
+                return
+
             def callback(lat, lon, name, error):
                 def apply_result(_dt):
                     resolve_button.disabled = False
@@ -775,7 +872,7 @@ class HomeScreen(Screen):
                     if error or lat is None or lon is None:
                         message.text = (
                             "解析失败："
-                            + (error or "没有返回坐标")
+                            + str(error or "没有返回坐标")
                         )
                         return
 
@@ -783,27 +880,18 @@ class HomeScreen(Screen):
                         lat_value = float(lat)
                         lon_value = float(lon)
 
-                        if not -90 <= lat_value <= 90:
-                            raise ValueError("纬度超出范围")
-                        if not -180 <= lon_value <= 180:
-                            raise ValueError("经度超出范围")
+                        if not valid_coordinates(lat_value, lon_value):
+                            raise ValueError("坐标超出范围")
+
                     except (TypeError, ValueError) as exc:
                         message.text = f"坐标无效：{exc}"
                         return
 
-                    self.current_latitude = lat_value
-                    self.current_longitude = lon_value
-                    self.location_name = name or query
-                    self.location_source = "manual"
-                    self.location_error = None
-
-                    try:
-                        self.save_location()
-                    except Exception as exc:
-                        print(f"[Location] 保存失败：{exc}")
-
-                    self.update_location_label()
-                    self.refresh_current(force=True)
+                    self.apply_manual_location(
+                        lat_value,
+                        lon_value,
+                        name or query,
+                    )
                     popup.dismiss()
 
                 Clock.schedule_once(apply_result, 0)
@@ -825,7 +913,7 @@ class HomeScreen(Screen):
 
         content.add_widget(
             make_label(
-                "提示：坐标格式为 纬度,经度，例如 34.0522,-118.2437",
+                "坐标格式：纬度,经度，例如 34.0522,-118.2437",
                 font_size=dp(11),
                 color=MUTED,
                 height=dp(32),
@@ -833,6 +921,22 @@ class HomeScreen(Screen):
         )
 
         popup.open()
+
+    def apply_manual_location(self, lat, lon, name):
+        self.current_latitude = float(lat)
+        self.current_longitude = float(lon)
+        self.location_name = str(name or "手动设置位置")
+        self.location_source = "manual"
+        self.timezone_name = None
+        self.location_error = None
+
+        try:
+            self.save_location()
+        except Exception as exc:
+            print(f"[Location] 保存位置失败：{exc}")
+
+        self.update_location_label()
+        self.request_timezone(lat, lon)
 
     # --------------------------------------------------------
     # 当前时间和排盘刷新
@@ -852,7 +956,22 @@ class HomeScreen(Screen):
         self.update_current_time(0)
         self.refresh_current(force=True)
 
-        # 只在没有已保存位置时，自动尝试定位。
+        # 有坐标但没有时区时，重新尝试查询时区。
+        if (
+            self.current_latitude is not None
+            and self.current_longitude is not None
+            and not self.timezone_name
+            and not self._timezone_requesting
+        ):
+            Clock.schedule_once(
+                lambda _dt: self.request_timezone(
+                    self.current_latitude,
+                    self.current_longitude,
+                ),
+                0.3,
+            )
+
+        # 只有没有保存坐标时才自动尝试设备定位。
         if (
             self.current_latitude is None
             or self.current_longitude is None
@@ -871,49 +990,65 @@ class HomeScreen(Screen):
             self._minute_event.cancel()
             self._minute_event = None
 
+    def get_location_now(self):
+        """返回地点当地时间；未取得时区时不伪造当地时间。"""
+        zone = safe_zone(self.timezone_name)
+        if zone is None:
+            return None
+
+        return datetime.now(zone)
+
     def update_current_time(self, _dt):
-        now = datetime.now()
+        now = self.get_location_now()
+
+        if now is None:
+            self.now_label.text = "当地时间：等待获取地点时区"
+            return
+
         self.now_label.text = (
-            "当前时间："
+            "当地时间："
             + now.strftime("%Y-%m-%d %H:%M:%S")
         )
 
     def refresh_current(self, *_args, force=False):
-        now = datetime.now()
-        minute_key = now.strftime("%Y%m%d%H%M")
+        if (
+            self.current_latitude is None
+            or self.current_longitude is None
+        ):
+            self.birth_label.text = "排盘时间：请先设置位置"
+            self.solar_label.text = "真太阳时：等待有效位置"
+            return
+
+        zone = safe_zone(self.timezone_name)
+        if zone is None:
+            self.birth_label.text = "排盘时间：等待获取时区"
+            self.solar_label.text = (
+                "真太阳时：请检查网络或时区数据库"
+            )
+            return
+
+        now = datetime.now(zone)
+        minute_key = (
+            f"{self.timezone_name}:"
+            + now.strftime("%Y%m%d%H%M")
+        )
 
         if not force and minute_key == self._last_minute_key:
             return
 
         self._last_minute_key = minute_key
 
-        # 纬度和经度都必须有效，不使用虚构的默认位置。
-        if (
-            self.current_latitude is None
-            or self.current_longitude is None
-        ):
-            self.birth_label.text = (
-                "排盘时间：" + now.strftime("%Y-%m-%d %H:%M")
-            )
-            self.solar_label.text = "真太阳时：请先设置有效位置"
-            return
-
         try:
             latitude = float(self.current_latitude)
             longitude = float(self.current_longitude)
 
-            if not -90 <= latitude <= 90:
-                raise ValueError("纬度超出范围")
-            if not -180 <= longitude <= 180:
-                raise ValueError("经度超出范围")
-
-            timezone_info = now.astimezone().tzinfo
+            if not valid_coordinates(latitude, longitude):
+                raise ValueError("位置坐标超出范围")
 
         except (TypeError, ValueError) as exc:
             self.solar_label.text = f"位置无效：{exc}"
             return
 
-        # 新任务开始后，旧任务的结果不能覆盖新结果。
         self._chart_request_id += 1
         request_id = self._chart_request_id
 
@@ -922,6 +1057,8 @@ class HomeScreen(Screen):
         )
         self.solar_label.text = "真太阳时：正在计算……"
 
+        timezone_name = self.timezone_name
+
         def work():
             try:
                 chart = build_chart(
@@ -929,7 +1066,7 @@ class HomeScreen(Screen):
                     longitude,
                     "男",
                     latitude=latitude,
-                    timezone_info=timezone_info,
+                    timezone_info=timezone_name,
                 )
 
                 pillars = get_pillars(chart)
@@ -959,7 +1096,6 @@ class HomeScreen(Screen):
     def set_current_result(
         self, request_id, pillars, birth, solar, error
     ):
-        # 忽略旧任务的结果，防止慢任务覆盖最新时间。
         if request_id != self._chart_request_id:
             return
 
@@ -975,10 +1111,14 @@ class HomeScreen(Screen):
 
         for index, (_, pillar) in enumerate(pillars):
             gan_label, zhi_label = self.pillar_cells[index]
-            ganzhi = str(pillar.ganzhi)
+            ganzhi_text = str(pillar.ganzhi)
 
-            gan_label.text = ganzhi[0] if len(ganzhi) > 0 else ""
-            zhi_label.text = ganzhi[1] if len(ganzhi) > 1 else ""
+            gan_label.text = (
+                ganzhi_text[0] if len(ganzhi_text) > 0 else ""
+            )
+            zhi_label.text = (
+                ganzhi_text[1] if len(ganzhi_text) > 1 else ""
+            )
 
             gan_label.color = gan_colors[index]
             zhi_label.color = zhi_colors[index]
@@ -1102,6 +1242,7 @@ class HomeScreen(Screen):
             "longitude": self.current_longitude,
             "latitude": self.current_latitude,
             "location_name": self.location_name,
+            "timezone": self.timezone_name,
         }
 
         self.saved_charts[key] = item
@@ -1191,8 +1332,14 @@ class AddScreen(Screen):
         self.add_widget(root)
 
     def reset_form(self):
+        home = self.manager.get_screen("home")
+        local_now = home.get_location_now()
+
+        if local_now is None:
+            local_now = datetime.now()
+
         self.name_input.text = ""
-        self.time_input.text = datetime.now().strftime(
+        self.time_input.text = local_now.strftime(
             "%Y-%m-%d %H:%M"
         )
         self.message.text = ""
@@ -1213,6 +1360,13 @@ class AddScreen(Screen):
             return
 
         home = self.manager.get_screen("home")
+
+        if not home.timezone_name:
+            self.message.text = (
+                "尚未取得地点时区，请先返回首页设置位置。"
+            )
+            return
+
         home.add_chart(name, time_text)
         self.manager.current = "home"
 
@@ -1277,6 +1431,8 @@ class DetailScreen(Screen):
 
         self.add_widget(root)
 
+        self._detail_request_id = 0
+
     def show_chart(self, key):
         home = self.manager.get_screen("home")
         item = home.saved_charts.get(key, {})
@@ -1284,16 +1440,19 @@ class DetailScreen(Screen):
         name = item.get("name", "未命名时间局")
         time_text = item.get("time", "")
 
-        # 优先使用保存时间局时记录的位置。
         latitude = item.get("latitude")
         longitude = item.get("longitude")
+        timezone_name = item.get("timezone")
 
-        # 兼容旧记录：没有保存坐标时使用首页当前位置。
+        # 兼容旧记录：只有旧记录没有保存时区时才尝试使用首页时区。
         if latitude is None:
             latitude = home.current_latitude
 
         if longitude is None:
             longitude = home.current_longitude
+
+        if not timezone_name:
+            timezone_name = home.timezone_name
 
         self.title_label.text = name
         self.time_label.text = time_text
@@ -1307,29 +1466,39 @@ class DetailScreen(Screen):
             )
             return
 
+        zone = safe_zone(timezone_name)
+        if zone is None:
+            self.detail_text.text = (
+                "无法确定此时间局的时区。\n"
+                "请返回首页，确认已成功获取地点时区后再试。"
+            )
+            return
+
+        self._detail_request_id += 1
+        request_id = self._detail_request_id
+
         def work():
             try:
-                birth_time = datetime.strptime(
+                # 用户输入的是该地点的当地墙上时间。
+                naive_birth = datetime.strptime(
                     time_text, "%Y-%m-%d %H:%M"
                 )
+                birth_time = naive_birth.replace(tzinfo=zone)
 
                 latitude_value = float(latitude)
                 longitude_value = float(longitude)
 
-                if not -90 <= latitude_value <= 90:
-                    raise ValueError("纬度超出范围")
-                if not -180 <= longitude_value <= 180:
-                    raise ValueError("经度超出范围")
-
-                # 目前将输入的时间按设备本地时区解释。
-                timezone_info = birth_time.astimezone().tzinfo
+                if not valid_coordinates(
+                    latitude_value, longitude_value
+                ):
+                    raise ValueError("纬度或经度超出范围")
 
                 chart = build_chart(
                     birth_time,
                     longitude_value,
                     "男",
                     latitude=latitude_value,
-                    timezone_info=timezone_info,
+                    timezone_info=timezone_name,
                 )
 
                 result = format_chart(chart, name)
@@ -1341,13 +1510,18 @@ class DetailScreen(Screen):
                 )
 
             Clock.schedule_once(
-                lambda _dt: self.set_detail_text(result),
+                lambda _dt: self.set_detail_text(
+                    request_id, result
+                ),
                 0,
             )
 
         Thread(target=work, daemon=True).start()
 
-    def set_detail_text(self, text):
+    def set_detail_text(self, request_id, text):
+        if request_id != self._detail_request_id:
+            return
+
         self.detail_text.text = text
         self.detail_text.texture_update()
         self.detail_text.height = max(
