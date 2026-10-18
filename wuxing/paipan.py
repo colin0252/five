@@ -2,6 +2,7 @@
 # wuxing/paipan.py
 """五行排盘核心：四柱、真太阳时、胎元、命宫、大运与五行统计。"""
 
+import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from .calendar import (
     month_info,
     branch_for_hour,
     find_longitude_time,
+    solar_longitude,
 )
 
 from .astronomy.solar_time import (
@@ -75,14 +77,7 @@ def pillar(name, gz, day_gan):
 
 
 def _resolve_timezone(timezone_info):
-    """
-    解析出生地时区。
-
-    支持：
-    - ZoneInfo 对象
-    - 其他 datetime.tzinfo 对象
-    - IANA 时区名称，例如 America/Los_Angeles
-    """
+    """解析出生地时区。"""
     if timezone_info is None:
         raise ValueError(
             "缺少出生地时区，不能准确计算排盘。"
@@ -103,7 +98,7 @@ def _resolve_timezone(timezone_info):
         ) as exc:
             raise ValueError(
                 f"无法识别出生地时区：{name}。"
-                "请检查时区名称以及应用中的时区数据。"
+                "请检查应用中的时区数据。"
             ) from exc
 
     if not hasattr(timezone_info, "utcoffset"):
@@ -116,10 +111,10 @@ def _resolve_timezone(timezone_info):
 
 def _make_aware_local_datetime(local_birth, timezone_obj):
     """
-    将当地钟表时间转换为带出生地时区的时间。
+    将当地钟表时间转换为带时区的 datetime。
 
-    对于夏令时跳时造成的不存在时间，拒绝继续计算。
-    对于夏令时回拨造成的重复时间，暂时使用 fold=0。
+    不存在的夏令时本地时间会被拒绝。
+    夏令时回拨产生的重复时间暂时采用 fold=0。
     """
     aware_birth = local_birth.replace(
         tzinfo=timezone_obj,
@@ -154,34 +149,8 @@ def build_chart(
     timezone_info=None,
     ephemeris_path=None,
 ):
-    """
-    生成四柱排盘。
+    """生成四柱排盘。"""
 
-    参数：
-        birth:
-            出生地当地钟表时间。
-            可以是 datetime；如果带时区，会先取其钟表时间，
-            再按 timezone_info 指定的出生地时区解释。
-
-        longitude:
-            经度，东经为正，西经为负。
-
-        sex:
-            "男" 或 "女"。
-
-        latitude:
-            纬度，北纬为正，南纬为负。
-
-        timezone_info:
-            出生地时区对象或 IANA 时区名称。
-            例如 America/Los_Angeles。
-
-        ephemeris_path:
-            可选的 DE421 星历文件路径。
-
-    注意：
-        不会在缺少必要位置、时区或星历时静默伪造结果。
-    """
     if not isinstance(birth, datetime):
         raise TypeError("birth 必须是 datetime 对象。")
 
@@ -211,78 +180,55 @@ def build_chart(
 
     timezone_obj = _resolve_timezone(timezone_info)
 
-    # 输入框填写的是当地钟表时间。
+    # 输入是出生地当地钟表时间。
     local_birth = birth.replace(tzinfo=None)
 
-    # 生成真正带有出生地时区的时间。
     aware_birth = _make_aware_local_datetime(
         local_birth,
         timezone_obj,
     )
 
-    # 统一使用 UTC 时间点比较节气，避免将当地时间误当 UTC。
     birth_utc = aware_birth.astimezone(timezone.utc)
-
     warnings = []
 
-    # 年柱：用带时区的出生时间判断立春前后。
-    y_gz, li_chun = year_ganzhi_and_start(
-        aware_birth
-    )
+    # 年柱：以立春为分界。
+    y_gz, li_chun = year_ganzhi_and_start(aware_birth)
 
     if li_chun is not None:
-        try:
-            li_chun_utc = li_chun.astimezone(timezone.utc)
-            seconds_to_lichun = abs(
-                (birth_utc - li_chun_utc).total_seconds()
-            )
+        li_chun_utc = li_chun.astimezone(timezone.utc)
 
-            if seconds_to_lichun < 3600:
-                warnings.append(
-                    "出生时间接近立春交界，"
-                    "请复核节气时刻及当地时区。"
-                )
-        except (AttributeError, TypeError):
+        if abs(
+            (birth_utc - li_chun_utc).total_seconds()
+        ) < 3600:
             warnings.append(
-                "无法确认立春交界的时区，"
-                "建议进一步核对年柱。"
+                "出生时间接近立春交界，"
+                "请复核节气时刻及当地时区。"
             )
 
-    # 月柱：传入带时区的出生时间，统一节气计算基准。
+    # 月柱：使用出生时刻对应的太阳黄经。
     m_gan, m_zhi, _solar_lon = month_info(
         aware_birth,
         y_gz[0],
     )
 
-    # 日柱按当地日期及项目规定的换日口径计算。
+    # 日柱按当地钟表日期和项目换日规则计算。
     d_gz = day_ganzhi(local_birth)
 
-    # 真太阳时：需要有效纬度、经度、时区和星历。
-    try:
-        tst = calc_true_solar_time(
-            local_datetime=aware_birth,
-            longitude=longitude,
-            latitude=latitude,
-            ephemeris_path=ephemeris_path,
-        )
-    except (SolarTimeError, ValueError, TypeError):
-        raise
-    except Exception as exc:
-        raise SolarTimeError(
-            f"真太阳时计算出现意外错误：{exc}"
-        ) from exc
+    # 真太阳时：需要星历、经纬度和出生地时区。
+    tst = calc_true_solar_time(
+        local_datetime=aware_birth,
+        longitude=longitude,
+        latitude=latitude,
+        ephemeris_path=ephemeris_path,
+    )
 
-    # 时柱使用真太阳时。
+    # 时柱采用真太阳时。
     h_zhi = branch_for_hour(
         tst.hour,
         tst.minute,
     )
 
-    h_gan = hour_gan(
-        d_gz[0],
-        h_zhi,
-    )
-
+    h_gan = hour_gan(d_gz[0], h_zhi)
     h_gz = h_gan + h_zhi
 
     if (
@@ -294,40 +240,14 @@ def build_chart(
             "请复核真太阳时与换日口径。"
         )
 
-    year = pillar(
-        "年柱",
-        y_gz,
-        d_gz[0],
-    )
+    year = pillar("年柱", y_gz, d_gz[0])
+    month = pillar("月柱", m_gan + m_zhi, d_gz[0])
+    day = pillar("日柱", d_gz, d_gz[0])
+    hour = pillar("时柱", h_gz, d_gz[0])
 
-    month = pillar(
-        "月柱",
-        m_gan + m_zhi,
-        d_gz[0],
-    )
+    fetal = fetal_origin(m_gan + m_zhi)
+    life = life_palace(m_zhi, h_zhi)
 
-    day = pillar(
-        "日柱",
-        d_gz,
-        d_gz[0],
-    )
-
-    hour = pillar(
-        "时柱",
-        h_gz,
-        d_gz[0],
-    )
-
-    fetal = fetal_origin(
-        m_gan + m_zhi
-    )
-
-    life = life_palace(
-        m_zhi,
-        h_zhi,
-    )
-
-    # 大运的节气时间比较也使用带时区的出生时间。
     dayun = calc_dayun(
         aware_birth,
         y_gz,
@@ -382,6 +302,37 @@ def life_palace(month_branch, hour_branch):
     return ZHI[index]
 
 
+def _nearest_solar_term(birth_utc, direction):
+    """
+    搜索出生时刻之前或之后最近的节气交点。
+
+    二十四节气的太阳黄经间隔为 15 度。
+    返回 UTC datetime；搜索失败时返回 None。
+    """
+    if direction not in (-1, 1):
+        raise ValueError("direction 必须为 1 或 -1。")
+
+    longitude = solar_longitude(birth_utc)
+
+    if direction == 1:
+        # 向未来：选择严格大于当前黄经的下一个 15 度交点。
+        target = (
+            (math.floor(longitude / 15.0) + 1) * 15
+        ) % 360
+    else:
+        # 向过去：选择严格小于当前黄经的上一个 15 度交点。
+        target = (
+            (math.ceil(longitude / 15.0) - 1) * 15
+        ) % 360
+
+    return find_longitude_time(
+        birth_utc,
+        target,
+        direction=direction,
+        max_days=20,
+    )
+
+
 def calc_dayun(
     birth,
     year_gz,
@@ -392,21 +343,28 @@ def calc_dayun(
     """
     根据年干阴阳与性别判断大运顺逆。
 
-    birth 应是带出生地时区的 datetime。
-    节气事件统一转换为 UTC 后进行比较。
-    起运算法本身仍需用权威历法数据进一步核验。
+    birth 必须是带出生地时区的 datetime。
+    起运方向按常见规则：
+      阳年男、阴年女顺行；
+      阴年男、阳年女逆行。
+
+    起运时间以出生时刻到相邻节气的时间差估算，
+    按传统常用换算：三天折一年。
     """
-    if birth.tzinfo is None:
+    if not isinstance(birth, datetime):
+        raise TypeError("birth 必须是 datetime 对象。")
+
+    if birth.tzinfo is None or birth.utcoffset() is None:
         raise ValueError(
             "计算大运时需要带出生地时区的出生时间。"
         )
 
+    if sex not in ("男", "女"):
+        raise ValueError('性别必须填写“男”或“女”。')
+
     birth_utc = birth.astimezone(timezone.utc)
 
-    yang_year = (
-        GAN.index(year_gz[0]) % 2 == 0
-    )
-
+    yang_year = GAN.index(year_gz[0]) % 2 == 0
     male = sex == "男"
 
     forward = (
@@ -414,84 +372,27 @@ def calc_dayun(
         or ((not yang_year) and (not male))
     )
 
-    targets = [
-        315,
-        345,
-        15,
-        45,
-        75,
-        105,
-        135,
-        165,
-        195,
-        225,
-        255,
-        285,
-    ]
+    direction = 1 if forward else -1
 
-    terms = []
+    # 顺行取出生后最近节气，逆行取出生前最近节气。
+    term = _nearest_solar_term(
+        birth_utc,
+        direction,
+    )
 
-    # find_longitude_time 对 aware datetime 返回 UTC 时刻。
-    # 这里显式使用 UTC 搜索起点，避免混用时区。
-    for year in (
-        birth.year - 1,
-        birth.year,
-        birth.year + 1,
-    ):
-        for index, target_degree in enumerate(targets):
-            base = (
-                datetime(year, 1, 1, tzinfo=timezone.utc)
-                + timedelta(days=30 * index)
-            )
-
-            event = find_longitude_time(
-                base,
-                target_degree,
-                direction=1,
-                max_days=370,
-            )
-
-            if event is not None:
-                if event.tzinfo is None:
-                    # 按项目历法函数的约定，naive 结果按 UTC 解释。
-                    event = event.replace(tzinfo=timezone.utc)
-                else:
-                    event = event.astimezone(timezone.utc)
-
-                terms.append(event)
-
-    terms = sorted(set(terms))
-
-    before = [
-        event for event in terms
-        if event < birth_utc
-    ]
-
-    after = [
-        event for event in terms
-        if event >= birth_utc
-    ]
-
-    if forward:
-        target = (
-            after[0]
-            if after
-            else birth_utc + timedelta(days=30)
-        )
-    else:
-        target = (
-            before[-1]
-            if before
-            else birth_utc - timedelta(days=30)
+    if term is None:
+        raise ValueError(
+            "无法找到相邻节气，暂时不能计算起运时间。"
         )
 
-    days = abs(
-        (target - birth_utc).total_seconds()
+    days_to_term = abs(
+        (term - birth_utc).total_seconds()
     ) / 86400.0
 
-    start_age = days / 3.0
-    month_index = pair_index(month_gz)
+    # 常见传统换算：三天折一年。
+    start_age = days_to_term / 3.0
 
+    month_index = pair_index(month_gz)
     result = []
 
     for n in range(8):
@@ -501,9 +402,7 @@ def calc_dayun(
             else -(n + 1)
         )
 
-        gz = ganzhi(
-            month_index + step
-        )
+        gz = ganzhi(month_index + step)
 
         result.append({
             "序": n + 1,
