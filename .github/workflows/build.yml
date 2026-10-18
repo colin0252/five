@@ -128,16 +128,19 @@ jobs:
           cd "$RUNNER_TEMP/kivy-ios"
           toolchain build kivy
 
-      # Skyfield 及其 Python 依赖。
-      # 这一步若与当前 kivy-ios Python 环境不兼容，
-      # 工作流会失败，而不会继续生成不完整 IPA。
+      # 安装 Skyfield、星历读取和时区数据库依赖
       - name: Install Skyfield dependencies
         run: |
           set -e
 
           cd "$RUNNER_TEMP/kivy-ios"
 
-          toolchain pip3 install skyfield jplephem sgp4 certifi
+          toolchain pip3 install skyfield jplephem sgp4 certifi tzdata
+
+          echo "=== Installed dependencies ==="
+          toolchain pip3 show skyfield
+          toolchain pip3 show jplephem
+          toolchain pip3 show tzdata
 
       - name: Check compiled recipes
         run: |
@@ -146,6 +149,7 @@ jobs:
           cd "$RUNNER_TEMP/kivy-ios"
           toolchain status
 
+      # 创建 iOS 项目
       - name: Create iOS project
         run: |
           set -e
@@ -162,10 +166,13 @@ jobs:
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
 
           echo "=== App source resources ==="
-          find "$PROJECT_DIR" -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf'
+          find "$PROJECT_DIR" \
+            \( -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf' \) \
+            -print
 
           ls -lah "$PROJECT_DIR"
 
+      # 编译 iOS 应用
       - name: Build iOS app
         run: |
           set -e
@@ -186,6 +193,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
+      # 配置并检查 iOS 定位权限
       - name: Configure and verify location permission
         run: |
           set -e
@@ -199,6 +207,7 @@ jobs:
           if /usr/libexec/PlistBuddy \
             -c "Print :NSLocationWhenInUseUsageDescription" \
             "$INFO_PLIST" >/dev/null 2>&1; then
+
             /usr/libexec/PlistBuddy \
               -c "Set :NSLocationWhenInUseUsageDescription 用于获取您所在位置的经纬度，以计算真太阳时" \
               "$INFO_PLIST"
@@ -218,7 +227,7 @@ jobs:
             -c "Print :CFBundleIdentifier" \
             "$INFO_PLIST"
 
-      # 检查星历和字体是否真的进入最终 App 包。
+      # 检查星历和中文字体是否进入最终应用
       - name: Verify app resources
         run: |
           set -e
@@ -230,13 +239,20 @@ jobs:
           echo "=== Verify DE421 in app bundle ==="
           find "$APP_PATH" -name 'de421.bsp' -print
 
-          if ! find "$APP_PATH" -name 'de421.bsp' -print -quit | grep -q .; then
+          if ! find "$APP_PATH" -name 'de421.bsp' \
+            -print -quit | grep -q .; then
             echo "ERROR: de421.bsp is missing from the app bundle"
             exit 1
           fi
 
           echo "=== Verify Chinese font ==="
           find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' -print
+
+          if ! find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' \
+            -print -quit | grep -q .; then
+            echo "ERROR: Chinese font is missing from the app bundle"
+            exit 1
+          fi
 
       - name: Check app
         run: |
@@ -247,6 +263,7 @@ jobs:
           test -d "$PROJECT_DIR/build/colin-app.app"
           ls -lah "$PROJECT_DIR/build/colin-app.app"
 
+      # 打包 IPA
       - name: Package IPA
         run: |
           set -e
