@@ -1,4 +1,3 @@
-
 # wuxing/ui.py
 import os
 import json
@@ -266,6 +265,8 @@ class HomeScreen(Screen):
 
         self.current_latitude = None
         self.current_longitude = None
+        self.current_gender = "男"
+        self.gender_button = None
         self.location_name = "尚未设置位置"
         self.location_source = "none"
         self.timezone_name = None
@@ -458,6 +459,14 @@ class HomeScreen(Screen):
             on_release=self.open_location_popup
         )
 
+        self.gender_button = make_button(
+            "即时排盘：男",
+            height=dp(36),
+            font_size=dp(12),
+            background_color=GOLD,
+        )
+        self.gender_button.bind(on_release=self.toggle_current_gender)
+        buttons.add_widget(self.gender_button)
         buttons.add_widget(self.location_button)
         buttons.add_widget(manual_button)
         content.add_widget(buttons)
@@ -796,8 +805,7 @@ class HomeScreen(Screen):
     # --------------------------------------------------------
     # 手动设置城市、地址或坐标
     # --------------------------------------------------------
-
-    def open_location_popup(self, *_):
+        def open_location_popup(self, *_):
         content = BoxLayout(
             orientation="vertical",
             padding=dp(12),
@@ -843,7 +851,6 @@ class HomeScreen(Screen):
             message.text = "正在解析位置……"
             resolve_button.disabled = True
 
-            # 支持手动输入“纬度,经度”，不必经过地名解析。
             coord_match = re.fullmatch(
                 r"\s*(-?\d+(?:\.\d+)?)\s*[,，]\s*"
                 r"(-?\d+(?:\.\d+)?)\s*",
@@ -956,7 +963,6 @@ class HomeScreen(Screen):
         self.update_current_time(0)
         self.refresh_current(force=True)
 
-        # 有坐标但没有时区时，重新尝试查询时区。
         if (
             self.current_latitude is not None
             and self.current_longitude is not None
@@ -971,7 +977,6 @@ class HomeScreen(Screen):
                 0.3,
             )
 
-        # 只有没有保存坐标时才自动尝试设备定位。
         if (
             self.current_latitude is None
             or self.current_longitude is None
@@ -1009,6 +1014,16 @@ class HomeScreen(Screen):
             "当地时间："
             + now.strftime("%Y-%m-%d %H:%M:%S")
         )
+
+    def toggle_current_gender(self, *_):
+        self.current_gender = (
+            "女" if self.current_gender == "男" else "男"
+        )
+        self.gender_button.text = (
+            f"即时排盘：{self.current_gender}"
+        )
+        self._last_minute_key = None
+        self.refresh_current(force=True)
 
     def refresh_current(self, *_args, force=False):
         if (
@@ -1058,13 +1073,14 @@ class HomeScreen(Screen):
         self.solar_label.text = "真太阳时：正在计算……"
 
         timezone_name = self.timezone_name
+        gender = self.current_gender
 
         def work():
             try:
                 chart = build_chart(
                     now,
                     longitude,
-                    "男",
+                    gender,
                     latitude=latitude,
                     timezone_info=timezone_name,
                 )
@@ -1233,18 +1249,17 @@ class HomeScreen(Screen):
         detail.show_chart(key)
         self.manager.current = "detail"
 
-    def add_chart(self, name, time_text):
+    def add_chart(self, name, time_text, gender="男"):
         key = datetime.now().strftime("%Y%m%d%H%M%S%f")
-
         item = {
             "name": name.strip() or "未命名时间局",
             "time": time_text.strip(),
+            "gender": gender if gender in ("男", "女") else "男",
             "longitude": self.current_longitude,
             "latitude": self.current_latitude,
             "location_name": self.location_name,
             "timezone": self.timezone_name,
         }
-
         self.saved_charts[key] = item
         self.save_saved_charts()
         self.refresh_list()
@@ -1287,7 +1302,7 @@ class AddScreen(Screen):
             padding=dp(14),
             spacing=dp(7),
             size_hint_y=None,
-            height=dp(230),
+            height=dp(285),
         )
 
         form_card.add_widget(
@@ -1306,6 +1321,21 @@ class AddScreen(Screen):
             hint_text="YYYY-MM-DD HH:MM",
         )
         form_card.add_widget(self.time_input)
+
+        form_card.add_widget(
+            make_label("性别", bold=True, color=GREEN)
+        )
+
+        self.gender_value = "男"
+        self.gender_button = make_button(
+            "男（点击切换为女）",
+            height=dp(40),
+            background_color=GOLD,
+        )
+        self.gender_button.bind(
+            on_release=self.toggle_gender
+        )
+        form_card.add_widget(self.gender_button)
 
         form_card.add_widget(
             make_label(
@@ -1331,6 +1361,16 @@ class AddScreen(Screen):
         root.add_widget(Widget())
         self.add_widget(root)
 
+    def toggle_gender(self, *_):
+        self.gender_value = (
+            "女" if self.gender_value == "男" else "男"
+        )
+        self.gender_button.text = (
+            "男（点击切换为女）"
+            if self.gender_value == "男"
+            else "女（点击切换为男）"
+        )
+
     def reset_form(self):
         home = self.manager.get_screen("home")
         local_now = home.get_location_now()
@@ -1342,6 +1382,8 @@ class AddScreen(Screen):
         self.time_input.text = local_now.strftime(
             "%Y-%m-%d %H:%M"
         )
+        self.gender_value = "男"
+        self.gender_button.text = "男（点击切换为女）"
         self.message.text = ""
 
     def go_back(self, *_):
@@ -1367,7 +1409,7 @@ class AddScreen(Screen):
             )
             return
 
-        home.add_chart(name, time_text)
+        home.add_chart(name, time_text, self.gender_value)
         self.manager.current = "home"
 
 
@@ -1439,6 +1481,9 @@ class DetailScreen(Screen):
 
         name = item.get("name", "未命名时间局")
         time_text = item.get("time", "")
+        gender = item.get("gender", "男")
+        if gender not in ("男", "女"):
+            gender = "男"
 
         latitude = item.get("latitude")
         longitude = item.get("longitude")
@@ -1496,7 +1541,7 @@ class DetailScreen(Screen):
                 chart = build_chart(
                     birth_time,
                     longitude_value,
-                    "男",
+                    gender,
                     latitude=latitude_value,
                     timezone_info=timezone_name,
                 )
