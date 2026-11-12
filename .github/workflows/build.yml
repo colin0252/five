@@ -4,15 +4,7 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
-
-# 同一分支同一时间只跑一个构建，重复触发会取消旧的，避免白等 30 分钟
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   # 依赖或 kivy-ios 升级时，把这里从 v1 改成 v2，强制重建缓存
