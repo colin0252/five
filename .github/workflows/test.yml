@@ -1,0 +1,15 @@
+name: Actions Test
+
+# 极简测试：只验证 GitHub Actions 本身是否正常，不编译任何东西
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hello
+        run: echo "Actions is working"
