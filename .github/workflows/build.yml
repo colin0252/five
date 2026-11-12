@@ -1,16 +1,22 @@
-
 name: Build iOS IPA
 
 on:
   push:
     branches:
       - main
-
   pull_request:
     branches:
       - main
-
   workflow_dispatch:
+
+# 同一分支同一时间只跑一个构建，重复触发会取消旧的，避免白等 30 分钟
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 依赖或 kivy-ios 升级时，把这里从 v1 改成 v2，强制重建缓存
+  CACHE_VERSION: v1
 
 jobs:
   build:
@@ -20,7 +26,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 准备中文字体和 DE421 星历文件
+      # 缓存中文字体和 DE421 星历（大文件，命中后不再重复下载）
+      - name: Cache app resources
+        id: astro-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            fonts/NotoSansSC-Regular.ttf
+            ephemeris/de421.bsp
+          key: appres-${{ env.CACHE_VERSION }}
+          restore-keys: |
+            appres-
+
+      # 准备中文字体和 DE421 星历文件（仅在缓存未命中时下载）
       - name: Prepare app resources
         run: |
           set -e
@@ -28,16 +46,18 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/fonts"
           mkdir -p "$GITHUB_WORKSPACE/ephemeris"
 
-          curl -fL --retry 3 \
-            'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' \
-            -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
-
+          if [ ! -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf" ]; then
+            curl -fL --retry 3 \
+              'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' \
+              -o "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
+          fi
           test -s "$GITHUB_WORKSPACE/fonts/NotoSansSC-Regular.ttf"
 
-          curl -fL --retry 3 \
-            'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de421.bsp' \
-            -o "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
-
+          if [ ! -s "$GITHUB_WORKSPACE/ephemeris/de421.bsp" ]; then
+            curl -fL --retry 3 \
+              'https://ssd.jpl.nasa.gov/ftp/eph/planets/bsp/de421.bsp' \
+              -o "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
+          fi
           test -s "$GITHUB_WORKSPACE/ephemeris/de421.bsp"
 
           echo "=== Font ==="
@@ -50,6 +70,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # 缓存 pip 下载，避免每次重新拉取
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-${{ env.CACHE_VERSION }}
+          restore-keys: |
+            pip-${{ runner.os }}-
 
       - name: Install system dependencies
         run: |
@@ -88,28 +117,40 @@ jobs:
           which toolchain
           toolchain --help
 
+      # 缓存 kivy-ios 已编译好的 python3/pyobjus/numpy/kivy 产物；命中后 toolchain build 会直接跳过
+      - name: Cache kivy-ios toolchain
+        id: kivy-ios-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/kivy-ios
+          key: kivyios-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-${{ env.CACHE_VERSION }}
+          restore-keys: |
+            kivyios-${{ runner.os }}-
+
+      # 注意：这里不再 rm -rf，保留缓存恢复出来的编译产物
       - name: Prepare kivy-ios build directory
         run: |
           set -e
 
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-          rm -rf "$BUILD_DIR"
-          mkdir -p "$BUILD_DIR"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          mkdir -p "$KIVY_IOS_DIR"
 
-          echo "Kivy-iOS build directory: $BUILD_DIR"
+          echo "Kivy-iOS build directory: $KIVY_IOS_DIR"
 
       - name: Build Python3 recipe
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
           toolchain build python3
 
       - name: Build Pyobjus recipe
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
           toolchain build pyobjus
           toolchain status
 
@@ -117,7 +158,8 @@ jobs:
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
           toolchain build numpy
           toolchain status
 
@@ -125,7 +167,8 @@ jobs:
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
           toolchain build kivy
 
       # 安装 Skyfield、星历读取和时区数据库依赖
@@ -133,7 +176,8 @@ jobs:
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
 
           toolchain pip3 install skyfield jplephem sgp4 certifi tzdata
 
@@ -146,7 +190,8 @@ jobs:
         run: |
           set -e
 
-          cd "$RUNNER_TEMP/kivy-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          cd "$KIVY_IOS_DIR"
           toolchain status
 
       # 创建 iOS 项目
@@ -154,10 +199,10 @@ jobs:
         run: |
           set -e
 
-          BUILD_DIR="$RUNNER_TEMP/kivy-ios"
-          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          PROJECT_DIR="$KIVY_IOS_DIR/colin-app-ios"
 
-          cd "$BUILD_DIR"
+          cd "$KIVY_IOS_DIR"
           rm -rf "$PROJECT_DIR"
 
           toolchain create colin-app "$GITHUB_WORKSPACE"
@@ -177,7 +222,8 @@ jobs:
         run: |
           set -e
 
-          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          PROJECT_DIR="$KIVY_IOS_DIR/colin-app-ios"
           cd "$PROJECT_DIR"
 
           xcodebuild \
@@ -198,7 +244,8 @@ jobs:
         run: |
           set -e
 
-          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          APP_PATH="$KIVY_IOS_DIR/colin-app-ios/build/colin-app.app"
           INFO_PLIST="$APP_PATH/Info.plist"
 
           test -d "$APP_PATH"
@@ -232,7 +279,8 @@ jobs:
         run: |
           set -e
 
-          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          APP_PATH="$KIVY_IOS_DIR/colin-app-ios/build/colin-app.app"
 
           test -d "$APP_PATH"
 
@@ -258,7 +306,8 @@ jobs:
         run: |
           set -e
 
-          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          PROJECT_DIR="$KIVY_IOS_DIR/colin-app-ios"
 
           test -d "$PROJECT_DIR/build/colin-app.app"
           ls -lah "$PROJECT_DIR/build/colin-app.app"
@@ -268,7 +317,8 @@ jobs:
         run: |
           set -e
 
-          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          PROJECT_DIR="$KIVY_IOS_DIR/colin-app-ios"
           cd "$PROJECT_DIR"
 
           rm -rf Payload
@@ -284,7 +334,8 @@ jobs:
         run: |
           set -e
 
-          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          KIVY_IOS_DIR="$RUNNER_TEMP/kivy-ios"
+          PROJECT_DIR="$KIVY_IOS_DIR/colin-app-ios"
 
           cp "$PROJECT_DIR/colin-app-unsigned.ipa" \
             "$GITHUB_WORKSPACE/colin-app-unsigned.ipa"
