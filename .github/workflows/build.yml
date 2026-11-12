@@ -16,7 +16,8 @@ env:
 
 jobs:
   build:
-    runs-on: macos-14
+    # 原来的 macos-14 已下线，改用 macos-latest（实测可用）
+    runs-on: macos-latest
     timeout-minutes: 120
 
     steps:
