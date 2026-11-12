@@ -1,12 +1,15 @@
-name: macOS Runner Test
+name: macOS15 Test
 
-# 只测试 macOS 构建机是否可用，不安装任何东西，几十秒结束
+# 测试 macOS 构建机是否可用（使用 macos-latest，而不是可能已下线的 macos-14）
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Show macOS version
         run: sw_vers
@@ -14,5 +17,8 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Show runner image
+        run: echo "ImageOS=$ImageOS  ImageVersion=$ImageVersion"
+
       - name: Done
-        run: echo "macOS runner works"
+        run: echo "macOS latest runner works"
