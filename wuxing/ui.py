@@ -805,7 +805,7 @@ class HomeScreen(Screen):
     # --------------------------------------------------------
     # 手动设置城市、地址或坐标
     # --------------------------------------------------------
-        def open_location_popup(self, *_):
+    def open_location_popup(self, *_):
         content = BoxLayout(
             orientation="vertical",
             padding=dp(12),
