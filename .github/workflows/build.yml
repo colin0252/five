@@ -1,9 +1,9 @@
 name: Build iOS IPA
 
 on:
+  # 任何分支的提交都会自动触发构建
   push:
-    branches:
-      - main
+  # 也可以在 Actions 页面手动运行
   workflow_dispatch:
 
 env:
