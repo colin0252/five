@@ -16,9 +16,10 @@ env:
 
 jobs:
   build:
-    # 原来的 macos-14 已下线，改用 macos-latest（实测可用）
-    runs-on: macos-latest
-    timeout-minutes: 120
+    # macos-latest 是 arm64 池，容量极度拥堵（排队 15 分钟后被取消）
+    # macos-15-intel 是独立的 Intel 池，可以绕开拥堵
+    runs-on: macos-15-intel
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
