@@ -349,6 +349,11 @@ class HomeScreen(Screen):
             self.data_dir,
             "location.json",
         )
+        self.settings_path = os.path.join(
+            self.data_dir,
+            "settings.json",
+        )
+        self.solar_mode = "mean"
         self.saved_charts = self.load_saved_charts()
         self.current_latitude = None
         self.current_longitude = None
@@ -364,6 +369,7 @@ class HomeScreen(Screen):
         self._clock_event = None
         self._minute_event = None
         self.load_location()
+        self.load_settings()
 
         root = BoxLayout(
             orientation="vertical",
@@ -638,6 +644,45 @@ class HomeScreen(Screen):
                     self.timezone_name = data.get("timezone")
         except Exception as exc:
             print(f"[Location] 读取位置失败：{exc}")
+
+    def load_settings(self):
+        if not os.path.isfile(self.settings_path):
+            return
+        try:
+            with open(
+                self.settings_path,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                data = json.load(file)
+            mode = data.get("solar_mode")
+            if mode in ("mean", "apparent"):
+                self.solar_mode = mode
+        except Exception as exc:
+            print(f"[Settings] 读取失败：{exc}")
+
+    def save_settings(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        data = {"solar_mode": self.solar_mode}
+        temp_path = self.settings_path + ".tmp"
+        with open(
+            temp_path,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, self.settings_path)
+
+    def set_solar_mode(self, mode):
+        if mode not in ("mean", "apparent"):
+            return
+        self.solar_mode = mode
+        try:
+            self.save_settings()
+        except Exception as exc:
+            print(f"[Settings] 保存失败：{exc}")
+        self._last_minute_key = None
+        self.refresh_current(force=True)
 
     def save_location(self):
         os.makedirs(self.data_dir, exist_ok=True)
@@ -1054,6 +1099,7 @@ class HomeScreen(Screen):
                     gender,
                     latitude=latitude,
                     timezone_info=timezone_name,
+                    solar_mode=self.solar_mode,
                 )
                 pillars = get_pillars(chart)
                 birth = chart.birth.strftime("%m-%d %H:%M")
@@ -1585,28 +1631,47 @@ class SettingsScreen(Screen):
         solar_card = Card(
             orientation="vertical",
             padding=dp(14),
-            spacing=dp(3),
+            spacing=dp(6),
             size_hint_y=None,
-            height=dp(104),
+            height=dp(150),
             card_color=CARD,
         )
-        solar_card.add_widget(
-            make_label(
-                "当前口径：平太阳时（仅按经度校正）",
-                font_size=dp(13),
-                bold=True,
-                color=TEXT,
-                height=dp(26),
-            )
+        self.solar_mode_label = make_label(
+            "当前口径：平太阳时（仅按经度校正）",
+            font_size=dp(12.5),
+            bold=True,
+            color=TEXT,
+            height=dp(26),
         )
-        solar_card.add_widget(
-            make_label(
-                "与主流排盘软件一致；天文真太阳时（含均时差）将在后续版本提供切换。",
-                font_size=dp(10.5),
-                color=MUTED,
-                height=dp(40),
-            )
+        solar_card.add_widget(self.solar_mode_label)
+        self.solar_mode_hint = make_label(
+            "与主流排盘软件一致。切换后首页和详情页会重新计算。",
+            font_size=dp(9.5),
+            color=MUTED,
+            height=dp(30),
         )
+        solar_card.add_widget(self.solar_mode_hint)
+        solar_buttons = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(38),
+            spacing=dp(8),
+        )
+        self.solar_mean_button = make_button(
+            "平太阳时",
+            height=dp(38),
+            font_size=dp(12),
+            on_release=lambda *_: self.choose_solar_mode("mean"),
+        )
+        self.solar_apparent_button = make_button(
+            "天文真太阳时",
+            height=dp(38),
+            font_size=dp(12),
+            on_release=lambda *_: self.choose_solar_mode("apparent"),
+        )
+        solar_buttons.add_widget(self.solar_mean_button)
+        solar_buttons.add_widget(self.solar_apparent_button)
+        solar_card.add_widget(solar_buttons)
         content.add_widget(solar_card)
 
         content.add_widget(
@@ -1782,6 +1847,7 @@ class SettingsScreen(Screen):
     def on_pre_enter(self, *_):
         self.home = self.manager.get_screen("home")
         self.refresh_location()
+        self.refresh_solar_mode()
         self.refresh_skills_status()
         self.refresh_ai_config()
 
@@ -1847,6 +1913,41 @@ class SettingsScreen(Screen):
             f"已加载 {info['skills']} 个技能"
             f" · {info['references']} 篇参考"
             f" · 约 {info['chars'] // 1000} 千字"
+        )
+
+    def choose_solar_mode(self, mode):
+        if self.home is None:
+            return
+        self.home.set_solar_mode(mode)
+        self.refresh_solar_mode()
+
+    def refresh_solar_mode(self):
+        if self.home is None:
+            return
+        mode = self.home.solar_mode
+        if mode == "apparent":
+            self.solar_mode_label.text = "当前口径：天文真太阳时（含均时差）"
+            self.solar_mode_hint.text = (
+                "按 Skyfield 星历计算，比平太阳时多一项均时差（最多约 ±16 分钟）。"
+            )
+        else:
+            self.solar_mode_label.text = "当前口径：平太阳时（仅按经度校正）"
+            self.solar_mode_hint.text = (
+                "与主流排盘软件一致。切换后首页和详情页会重新计算。"
+            )
+        active = GREEN
+        inactive = GREEN_LIGHT
+        self.solar_mean_button.background_color = (
+            active if mode == "mean" else inactive
+        )
+        self.solar_mean_button.color = (
+            (1, 1, 1, 1) if mode == "mean" else GREEN
+        )
+        self.solar_apparent_button.background_color = (
+            active if mode == "apparent" else inactive
+        )
+        self.solar_apparent_button.color = (
+            (1, 1, 1, 1) if mode == "apparent" else GREEN
         )
 
     def refresh_location(self):
@@ -2915,6 +3016,7 @@ class DetailScreen(Screen):
                     gender,
                     latitude=latitude_value,
                     timezone_info=timezone_name,
+                    solar_mode=home.solar_mode,
                 )
                 error = None
             except Exception as exc:
