@@ -239,6 +239,28 @@ class Divider(Widget):
         self.line_rect.size = self.size
 
 
+def safe_top():
+    """iPhone 刘海/状态栏需要预留的顶部高度。"""
+    try:
+        from kivy.utils import platform
+        if platform == "ios":
+            return dp(50)
+    except Exception:
+        pass
+    return 0
+
+
+def safe_bottom():
+    """底部 Home 指示条预留高度。"""
+    try:
+        from kivy.utils import platform
+        if platform == "ios":
+            return dp(18)
+    except Exception:
+        pass
+    return 0
+
+
 def safe_zone(timezone_name):
     """将时区名称转换为 ZoneInfo；不可用时返回 None。"""
     if not timezone_name or not isinstance(timezone_name, str):
@@ -2067,30 +2089,54 @@ class SkillsScreen(Screen):
         self.add_widget(root)
 
     def on_pre_enter(self, *_):
+        # 技能库文件多，放后台线程加载，避免卡死主线程被系统杀掉
+        self.status_label.text = "正在加载技能库……"
+        self.list_layout.clear_widgets()
+        Thread(target=self._load_work, daemon=True).start()
+
+    def _load_work(self):
         try:
-            self.library = get_library()
-            self.library.load()
+            library = get_library()
+            library.load()
+            info = library.stats()
+            error = None
         except Exception as exc:
+            library = None
+            info = None
+            error = f"{type(exc).__name__}: {exc}"
+        Clock.schedule_once(
+            lambda _dt: self._load_done(library, info, error),
+            0,
+        )
+
+    def _load_done(self, library, info, error):
+        if error:
             self.library = None
-            self.status_label.text = "技能库不可用：" + str(exc)
+            self.status_label.text = "技能库不可用：" + error
             return
-        info = self.library.stats()
+        self.library = library
         if not info.get("loaded"):
             self.status_label.text = (
-                "未找到 skills.zip，请先上传到仓库根目录。"
+                "未找到 skills.zip，请检查构建日志"
             )
         else:
             self.status_label.text = (
                 f"来源 {info.get('source', '')}"
                 f" · {info['skills']} 个技能"
             )
-        self.render()
+        try:
+            self.render()
+        except Exception as exc:
+            self.status_label.text = "显示失败：" + str(exc)
 
     def on_search(self, _instance, _value):
-        self.render()
+        try:
+            self.render()
+        except Exception as exc:
+            self.status_label.text = "搜索失败：" + str(exc)
 
     def go_back(self, *_):
-        self.manager.current = "settings"
+        self.manager.current = "more"
 
     def render(self):
         self.list_layout.clear_widgets()
@@ -2199,7 +2245,8 @@ class SkillsScreen(Screen):
                 )
                 info_box.add_widget(
                     make_label(
-                        item["description"][:46] or item["title"],
+                        (item.get("description") or "")[:46]
+                        or item.get("title", ""),
                         font_size=dp(9),
                         color=MUTED,
                         height=dp(28),
@@ -2304,12 +2351,24 @@ class SkillDetailScreen(Screen):
             + str(item["length"])
             + " 字"
         )
-        self.body_text.text = item["body"] or item["text"]
-        self.body_text.texture_update()
-        self.body_text.height = max(
-            dp(600),
-            self.body_text.texture_size[1] + dp(30),
-        )
+        try:
+            body = item.get("body") or item.get("text") or ""
+            total = len(item.get("text") or body)
+            limit = 6000
+            if len(body) > limit:
+                body = (
+                    body[:limit]
+                    + "\n\n……（全文 " + str(total) + " 字，仅显示前 "
+                    + str(limit) + " 字）"
+                )
+            self.body_text.text = body
+            self.body_text.texture_update()
+            self.body_text.height = max(
+                dp(600),
+                self.body_text.texture_size[1] + dp(30),
+            )
+        except Exception as exc:
+            self.body_text.text = "显示失败：" + str(exc)
 
     def go_back(self, *_):
         self.manager.current = "skills"
@@ -3913,4 +3972,10 @@ class WuxingApp(App):
         manager.add_widget(DetailScreen(name="detail"))
         manager.add_widget(QimenScreen(name="qimen"))
         manager.add_widget(MoreScreen(name="more"))
-        return manager
+        # iOS 上给刘海和底部指示条留白，避免顶部标题被摄像头挡住
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[0, safe_top(), 0, safe_bottom()],
+        )
+        root.add_widget(manager)
+        return root
