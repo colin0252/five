@@ -31,11 +31,6 @@ _LOCATION_REQUEST = {"state": None}
 MAX_LOCATION_AGE_SECONDS = 120
 MAX_HORIZONTAL_ACCURACY_METERS = 10000
 
-# 合法的 IANA 时区名称，例如 Asia/Shanghai、America/New_York。
-_IANA_NAME_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+$"
-)
-
 
 def _valid_coordinates(lat, lon):
     """验证并返回有效的纬度、经度。"""
@@ -84,76 +79,8 @@ def _urlopen(request, timeout):
                 request, timeout=timeout, context=context
             )
         except TypeError:
-            # 极老的 Python 不支持 context 参数。
             pass
     return urllib.request.urlopen(request, timeout=timeout)
-
-
-def _device_timezone_name():
-    """读取 iPhone 系统当前时区名称（完全离线）。"""
-    if platform != "ios":
-        return None
-    try:
-        from pyobjus import autoclass
-
-        zone = autoclass("NSTimeZone").localTimeZone()
-        raw = zone.name()
-    except Exception:
-        return None
-    values = []
-    try:
-        values.append(str(raw))
-    except Exception:
-        pass
-    for method in ("UTF8String", "cString"):
-        try:
-            value = getattr(raw, method)()
-        except Exception:
-            continue
-        if isinstance(value, bytes):
-            try:
-                values.append(value.decode("utf-8", "ignore"))
-            except Exception:
-                pass
-        elif value:
-            values.append(str(value))
-    for value in values:
-        value = value.strip().strip('"')
-        if _IANA_NAME_RE.match(value):
-            try:
-                from zoneinfo import ZoneInfo
-
-                ZoneInfo(value)
-                return value
-            except Exception:
-                continue
-    return None
-
-
-def _timezone_offset_hours(name):
-    """返回时区当前 UTC 偏移小时数；失败返回 None。"""
-    try:
-        from zoneinfo import ZoneInfo
-
-        zone = ZoneInfo(name)
-        offset = datetime.now(timezone.utc).astimezone(zone).utcoffset()
-        if offset is None:
-            return None
-        return offset.total_seconds() / 3600.0
-    except Exception:
-        return None
-
-
-def _timezone_near_longitude(name, longitude):
-    """判断时区偏移与经度估算是否接近（±3 小时）。"""
-    offset = _timezone_offset_hours(name)
-    if offset is None:
-        return False
-    try:
-        expected = float(longitude) / 15.0
-    except (TypeError, ValueError):
-        return False
-    return abs(offset - expected) <= 3.0
 
 
 def _timezone_from_coordinates(latitude, longitude):
@@ -163,11 +90,12 @@ def _timezone_from_coordinates(latitude, longitude):
         lon = float(longitude)
     except (TypeError, ValueError):
         return None
-    # 中国大陆及港澳：统一东八区。
+
+    # 中国大陆：统一东八区（含港澳），不依赖网络。
     if 18.0 <= lat <= 54.0 and 73.0 <= lon <= 122.0:
-        # 排除越南、老挝、泰国、柬埔寨、缅甸等低纬地区。
         if not (lat < 22.0 and lon < 108.0):
             return "Asia/Shanghai"
+
     try:
         half_hours = round(lon / 15.0 * 2.0)
     except Exception:
@@ -262,10 +190,6 @@ def get_location(callback, timeout=25):
         callback(lat, lon, "gps", None)
     失败：
         callback(None, None, "error", 错误信息)
-
-    注意：
-        需要 iOS 原生定位支持和用户授权。
-        不会自动使用固定坐标代替实际定位。
     """
     if not callable(callback):
         raise TypeError("callback 必须是可调用对象")
@@ -284,7 +208,6 @@ def get_location(callback, timeout=25):
 
         CLLocationManager = autoclass("CLLocationManager")
 
-        # 如果前一个定位仍在进行，先终止它。
         with _LOCATION_LOCK:
             previous = _LOCATION_REQUEST.get("state")
             if previous is not None:
@@ -313,7 +236,6 @@ def get_location(callback, timeout=25):
         _LOCATION_REQUEST["state"] = state
 
         def finish(lat=None, lon=None, source="error", error=None):
-            """结束当前定位请求，并且只回调一次。"""
             with state["lock"]:
                 if state["finished"]:
                     return
@@ -337,36 +259,22 @@ def get_location(callback, timeout=25):
                 if _LOCATION_REQUEST.get("state") is state:
                     _LOCATION_REQUEST["state"] = None
 
-            _schedule_callback(
-                callback,
-                lat,
-                lon,
-                source,
-                error,
-            )
+            _schedule_callback(callback, lat, lon, source, error)
 
         class LocationDelegate:
             @protocol("CLLocationManagerDelegate")
-            def locationManager_didUpdateLocations_(
-                self,
-                manager,
-                locations,
-            ):
+            def locationManager_didUpdateLocations_(self, manager, locations):
                 if state["finished"]:
                     return
                 try:
                     count = int(locations.count())
                     if count < 1:
                         return
-
-                    # 只检查本次收到的最新位置。
                     location = locations.objectAtIndex_(count - 1)
 
                     timestamp = _location_timestamp(location)
                     if timestamp is None:
-                        finish(
-                            error="无法读取定位时间，已拒绝使用该位置。"
-                        )
+                        finish(error="无法读取定位时间，已拒绝使用该位置。")
                         return
 
                     age = (
@@ -374,34 +282,23 @@ def get_location(callback, timeout=25):
                         - timestamp
                     )
                     if age < -30:
-                        finish(
-                            error="定位时间异常，已拒绝使用该位置。"
-                        )
+                        finish(error="定位时间异常，已拒绝使用该位置。")
                         return
                     if age > MAX_LOCATION_AGE_SECONDS:
-                        # 旧位置不直接使用，继续等待新位置。
                         return
 
                     accuracy = _location_accuracy(location)
                     if accuracy is not None and accuracy < 0:
-                        finish(
-                            error="iOS 返回的定位精度无效。"
-                        )
+                        finish(error="iOS 返回的定位精度无效。")
                         return
                     if (
                         accuracy is not None
                         and accuracy > MAX_HORIZONTAL_ACCURACY_METERS
                     ):
-                        # 精度太差时继续等待更好的位置。
                         return
 
                     lat, lon = _extract_coordinates(location)
-                    finish(
-                        lat,
-                        lon,
-                        "gps",
-                        None,
-                    )
+                    finish(lat, lon, "gps", None)
                 except Exception as exc:
                     finish(
                         error=(
@@ -411,30 +308,21 @@ def get_location(callback, timeout=25):
                     )
 
             @protocol("CLLocationManagerDelegate")
-            def locationManager_didFailWithError_(
-                self,
-                manager,
-                error,
-            ):
+            def locationManager_didFailWithError_(self, manager, error):
                 try:
                     message = str(error)
                 except Exception:
                     message = "iOS 未能取得设备位置"
                 finish(error=f"iOS 定位失败：{message}")
 
-            # 兼容旧版 iOS 的授权状态回调。
             @protocol("CLLocationManagerDelegate")
             def locationManager_didChangeAuthorizationStatus_(
-                self,
-                manager,
-                status,
+                self, manager, status
             ):
                 try:
                     status = int(status)
                 except Exception:
                     return
-                # 0：未决定；1：受限制；2：拒绝；
-                # 3：仅使用期间允许；4：始终允许。
                 if status == 1:
                     finish(error="系统限制了定位权限。")
                 elif status == 2:
@@ -460,7 +348,6 @@ def get_location(callback, timeout=25):
         state["delegate"] = delegate
         state["manager"] = manager
 
-        # 必须先设置 delegate，再请求权限或启动服务。
         manager.setDelegate_(delegate)
 
         try:
@@ -483,9 +370,7 @@ def get_location(callback, timeout=25):
         )
 
         try:
-            status = int(
-                CLLocationManager.authorizationStatus()
-            )
+            status = int(CLLocationManager.authorizationStatus())
         except Exception:
             status = 0
 
@@ -503,7 +388,6 @@ def get_location(callback, timeout=25):
         if status in (3, 4):
             manager.startUpdatingLocation()
         else:
-            # 0：尚未决定。等待授权状态回调后再启动。
             manager.requestWhenInUseAuthorization()
 
     except Exception as exc:
@@ -524,7 +408,6 @@ def get_location(callback, timeout=25):
 def resolve_location(query, callback, timeout=12):
     """
     将城市名、地址或纬度,经度解析成坐标。
-
     callback(lat, lon, display_name, error)
     """
     if not callable(callback):
@@ -533,30 +416,16 @@ def resolve_location(query, callback, timeout=12):
     query = str(query or "").strip()
     if not query:
         _schedule_callback(
-            callback,
-            None,
-            None,
-            "",
-            "请填写城市、地址或纬度,经度。",
+            callback, None, None, "", "请填写城市、地址或纬度,经度。"
         )
         return
 
-    # 支持直接输入经纬度，无需网络。
     if "," in query:
         parts = [part.strip() for part in query.split(",")]
         if len(parts) == 2:
             try:
-                lat, lon = _valid_coordinates(
-                    parts[0],
-                    parts[1],
-                )
-                _schedule_callback(
-                    callback,
-                    lat,
-                    lon,
-                    query,
-                    None,
-                )
+                lat, lon = _valid_coordinates(parts[0], parts[1])
+                _schedule_callback(callback, lat, lon, query, None)
                 return
             except (TypeError, ValueError):
                 pass
@@ -569,8 +438,7 @@ def resolve_location(query, callback, timeout=12):
                 "limit": 1,
             })
             url = (
-                "https://nominatim.openstreetmap.org/search?"
-                + params
+                "https://nominatim.openstreetmap.org/search?" + params
             )
             request = urllib.request.Request(
                 url,
@@ -579,44 +447,24 @@ def resolve_location(query, callback, timeout=12):
                     "Accept": "application/json",
                 },
             )
-            with _urlopen(
-                request,
-                timeout=max(1, float(timeout)),
-            ) as response:
-                data = json.loads(
-                    response.read().decode("utf-8")
-                )
+            with _urlopen(request, timeout=max(1, float(timeout))) as response:
+                data = json.loads(response.read().decode("utf-8"))
             if not data:
                 raise ValueError(
                     "没有找到该城市或地址。请补充州名、国家名，"
                     "或直接输入纬度,经度。"
                 )
             item = data[0]
-            lat, lon = _valid_coordinates(
-                item["lat"],
-                item["lon"],
-            )
+            lat, lon = _valid_coordinates(item["lat"], item["lon"])
             name = item.get("display_name", query)
-            _schedule_callback(
-                callback,
-                lat,
-                lon,
-                name,
-                None,
-            )
+            _schedule_callback(callback, lat, lon, name, None)
         except Exception as exc:
             _schedule_callback(
-                callback,
-                None,
-                None,
-                "",
+                callback, None, None, "",
                 f"{type(exc).__name__}: {exc}",
             )
 
-    threading.Thread(
-        target=worker,
-        daemon=True,
-    ).start()
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def get_timezone(lat, lon, callback, timeout=12):
@@ -624,14 +472,14 @@ def get_timezone(lat, lon, callback, timeout=12):
     根据经纬度查询地点的 IANA 时区名称。
 
     成功：
-        callback("America/Los_Angeles", None)
+        callback("Asia/Shanghai", None)
     失败：
         callback(None, "时区查询失败：...")
 
     说明：
-        优先使用 iPhone 系统时区（离线）；
-        其次联网查询；最后按经度离线估算，
-        保证没有网络时也能正常排盘。
+        不调用任何 iOS 原生 API（避免原生崩溃）。
+        中国大陆直接离线返回东八区；其余地区先联网查询，
+        失败则按经度离线估算，保证断网也能排盘。
     """
     if not callable(callback):
         raise TypeError("callback 必须是可调用对象")
@@ -640,30 +488,19 @@ def get_timezone(lat, lon, callback, timeout=12):
         lat, lon = _valid_coordinates(lat, lon)
     except (TypeError, ValueError) as exc:
         _schedule_callback(
-            callback,
-            None,
-            f"无效坐标，无法查询时区：{exc}",
+            callback, None, f"无效坐标，无法查询时区：{exc}"
         )
         return
 
-    # 在主线程读取系统时区，避免 ObjC 调用发生在子线程。
-    device_name = _device_timezone_name()
+    fallback = _timezone_from_coordinates(lat, lon)
+
+    # 中国大陆：直接返回，零延迟、零网络。
+    if fallback == "Asia/Shanghai":
+        _schedule_callback(callback, fallback, None)
+        return
 
     def worker():
         errors = []
-
-        # 1) iPhone 系统时区：完全离线，且与当前位置匹配。
-        if device_name and _timezone_near_longitude(
-            device_name, lon
-        ):
-            _schedule_callback(
-                callback,
-                device_name,
-                None,
-            )
-            return
-
-        # 2) 联网获取精确的 IANA 时区。
         try:
             params = urllib.parse.urlencode({
                 "latitude": f"{lat:.7f}",
@@ -671,10 +508,7 @@ def get_timezone(lat, lon, callback, timeout=12):
                 "timezone": "auto",
                 "forecast_days": 1,
             })
-            url = (
-                "https://api.open-meteo.com/v1/forecast?"
-                + params
-            )
+            url = "https://api.open-meteo.com/v1/forecast?" + params
             request = urllib.request.Request(
                 url,
                 headers={
@@ -686,45 +520,24 @@ def get_timezone(lat, lon, callback, timeout=12):
                 request,
                 timeout=max(3.0, min(float(timeout), 8.0)),
             ) as response:
-                data = json.loads(
-                    response.read().decode("utf-8")
-                )
+                data = json.loads(response.read().decode("utf-8"))
             timezone_name = data.get("timezone")
             if (
                 not isinstance(timezone_name, str)
                 or "/" not in timezone_name
             ):
-                raise ValueError(
-                    "服务没有返回有效的 IANA 时区名称。"
-                )
-            _schedule_callback(
-                callback,
-                timezone_name,
-                None,
-            )
+                raise ValueError("服务没有返回有效的 IANA 时区名称。")
+            _schedule_callback(callback, timezone_name, None)
             return
         except Exception as exc:
-            errors.append(
-                f"{type(exc).__name__}: {exc}"
-            )
+            errors.append(f"{type(exc).__name__}: {exc}")
 
-        # 3) 离线按经纬度估算，保证断网也能排盘。
-        fallback = _timezone_from_coordinates(lat, lon)
         if fallback:
-            _schedule_callback(
-                callback,
-                fallback,
-                None,
-            )
+            _schedule_callback(callback, fallback, None)
             return
 
         _schedule_callback(
-            callback,
-            None,
-            "时区查询失败：" + "；".join(errors),
+            callback, None, "时区查询失败：" + "；".join(errors)
         )
 
-    threading.Thread(
-        target=worker,
-        daemon=True,
-    ).start()
+    threading.Thread(target=worker, daemon=True).start()
