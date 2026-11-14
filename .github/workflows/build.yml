@@ -1,5 +1,4 @@
 name: iOS Build
-
 # 任何分支的提交都会自动触发；也可以在 Actions 页面手动运行
 on:
   push:
@@ -11,21 +10,17 @@ permissions:
   contents: read
 
 env:
-  # 需要强制重建缓存时，把 v1 改成 v2
   CACHE_VERSION: v1
 
 jobs:
   build:
-    # macos-latest 是 arm64 池，容量极度拥堵（排队 15 分钟后被取消）
-    # macos-15-intel 是独立的 Intel 池，可以绕开拥堵
     runs-on: macos-15-intel
     timeout-minutes: 180
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 字体与星历（有缓存就不再下载） ----------
+      # ---------- 字体与星历 ----------
       - name: Cache font and ephemeris
         id: appres
         uses: actions/cache@v4
@@ -71,7 +66,7 @@ jobs:
           python -m pip show kivy-ios
           which toolchain
 
-      # ---------- kivy-ios 编译（缓存命中会自动跳过已编译的部分） ----------
+      # ---------- kivy-ios 编译 ----------
       - name: Cache kivy-ios toolchain
         uses: actions/cache@v4
         with:
@@ -133,22 +128,34 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
-      # ---------- 定位权限 ----------
-      - name: Configure location permission
+      # ---------- Info.plist：定位权限 + 文件共享（便于导出日志） ----------
+      - name: Configure Info.plist
         run: |
           set -e
           APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
           INFO_PLIST="$APP_PATH/Info.plist"
           test -f "$INFO_PLIST"
+
           if /usr/libexec/PlistBuddy -c "Print :NSLocationWhenInUseUsageDescription" "$INFO_PLIST" >/dev/null 2>&1; then
             /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 用于获取您所在位置的经纬度，以计算真太阳时" "$INFO_PLIST"
           else
             /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 用于获取您所在位置的经纬度，以计算真太阳时" "$INFO_PLIST"
           fi
+
+          for KEY in UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
+            if /usr/libexec/PlistBuddy -c "Print :$KEY" "$INFO_PLIST" >/dev/null 2>&1; then
+              /usr/libexec/PlistBuddy -c "Set :$KEY true" "$INFO_PLIST"
+            else
+              /usr/libexec/PlistBuddy -c "Add :$KEY bool true" "$INFO_PLIST"
+            fi
+          done
+
           /usr/libexec/PlistBuddy -c "Print :NSLocationWhenInUseUsageDescription" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$INFO_PLIST"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST"
 
-      # ---------- 检查资源是否进包 ----------
+      # ---------- 检查资源 ----------
       - name: Verify app resources
         run: |
           set -e
@@ -163,7 +170,7 @@ jobs:
             echo "ERROR: Chinese font missing"; exit 1
           fi
 
-      # ---------- 打包并上传 ----------
+      # ---------- 打包 ----------
       - name: Package IPA
         run: |
           set -e
