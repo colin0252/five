@@ -502,12 +502,12 @@ class HomeScreen(Screen):
             spacing=dp(4),
         )
         icon_items = (
-            ("奇", "奇门遁甲", GREEN),
-            ("罗", "罗盘", RED),
-            ("标", "标签管理", GOLD),
-            ("日", "日记", (0.20, 0.38, 0.62, 1)),
+            ("奇", "奇门遁甲", GREEN, "qimen"),
+            ("罗", "罗盘", RED, "compass"),
+            ("标", "标签管理", GOLD, "tags"),
+            ("日", "日记", (0.20, 0.38, 0.62, 1), "diary"),
         )
-        for icon_char, icon_title, icon_color in icon_items:
+        for icon_char, icon_title, icon_color, icon_action in icon_items:
             item = BoxLayout(
                 orientation="vertical",
                 spacing=dp(1),
@@ -524,7 +524,9 @@ class HomeScreen(Screen):
                     diameter=28,
                     bg=(0.940, 0.930, 0.900, 1),
                     fg=icon_color,
-                    on_release=lambda title=icon_title: self.show_placeholder(title),
+                    on_release=lambda title=icon_title, action=icon_action: (
+                        self.on_icon_action(title, action)
+                    ),
                 )
             )
             holder.add_widget(Widget())
@@ -1356,6 +1358,15 @@ class HomeScreen(Screen):
         except Exception as exc:
             print(f"[Storage] 保存星标失败：{exc}")
         self.refresh_list()
+
+    def on_icon_action(self, title, action):
+        if action == "diary":
+            self.manager.current = "diary"
+            return
+        if action == "tags":
+            self.manager.current = "tags"
+            return
+        self.show_placeholder(title)
 
     def open_messages(self, *_):
         self.show_placeholder("消息")
@@ -2202,6 +2213,453 @@ class SkillDetailScreen(Screen):
 
 
 # ============================================================
+# 日记
+# ============================================================
+class DiaryScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.path = None
+        self.entries = {}
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(16), dp(8), dp(16), dp(8)],
+            spacing=dp(8),
+        )
+
+        top = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(40),
+            spacing=dp(10),
+        )
+        top.add_widget(
+            make_button(
+                "‹ 首页",
+                size_hint=(None, None),
+                size=(dp(72), dp(34)),
+                font_size=dp(12),
+                background_color=(0.420, 0.450, 0.410, 1),
+                on_release=self.go_back,
+            )
+        )
+        top.add_widget(
+            make_label(
+                "日记",
+                font_size=dp(22),
+                bold=True,
+                color=GREEN,
+                height=dp(36),
+            )
+        )
+        self.count_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            halign="right",
+            height=dp(36),
+        )
+        top.add_widget(self.count_label)
+        root.add_widget(top)
+
+        self.list_layout = GridLayout(
+            cols=1,
+            spacing=dp(6),
+            size_hint_y=None,
+        )
+        self.list_layout.bind(
+            minimum_height=self.list_layout.setter("height")
+        )
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        scroll.add_widget(self.list_layout)
+        root.add_widget(scroll)
+
+        bottom = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(50),
+        )
+        add_button = make_button(
+            "+ 写日记",
+            size_hint=(None, None),
+            size=(dp(120), dp(46)),
+            font_size=dp(14),
+            on_release=lambda *_: self.open_editor(None),
+        )
+        bottom.add_widget(add_button)
+        bottom.add_widget(Widget())
+        root.add_widget(bottom)
+        self.add_widget(root)
+
+    # --------------------------------------------------------
+    def get_data_dir(self):
+        home = self.manager.get_screen("home")
+        return home.data_dir
+
+    def get_path(self):
+        return os.path.join(self.get_data_dir(), "diary.json")
+
+    def load_entries(self):
+        path = self.get_path()
+        self.entries = {}
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            if isinstance(data, dict):
+                self.entries = data
+        except Exception as exc:
+            print(f"[Diary] 读取失败：{exc}")
+
+    def save_entries(self):
+        path = self.get_path()
+        temp_path = path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(self.entries, file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+
+    @staticmethod
+    def day_ganzhi_text(date_text):
+        try:
+            from .calendar import day_ganzhi
+            value = datetime.strptime(date_text, "%Y-%m-%d")
+            return day_ganzhi(value) + "日"
+        except Exception:
+            return ""
+
+    def on_pre_enter(self, *_):
+        self.load_entries()
+        self.refresh_list()
+
+    def refresh_list(self):
+        self.list_layout.clear_widgets()
+        keys = sorted(self.entries.keys(), reverse=True)
+        self.count_label.text = f"{len(keys)} 篇" if keys else ""
+        if not keys:
+            self.list_layout.add_widget(
+                make_label(
+                    "还没有日记，点下方「+ 写日记」记录今天。",
+                    font_size=dp(12),
+                    color=MUTED,
+                    halign="center",
+                    height=dp(70),
+                )
+            )
+            return
+        for key in keys:
+            entry = self.entries.get(key) or {}
+            date_text = entry.get("date", key)
+            text = str(entry.get("text", "")).strip()
+            preview = text.replace("\n", " ")[:46]
+            if len(text.replace("\n", " ")) > 46:
+                preview += "…"
+            row = Card(
+                orientation="vertical",
+                padding=[dp(12), dp(6), dp(10), dp(6)],
+                spacing=dp(1),
+                size_hint_y=None,
+                height=dp(90),
+                card_color=CARD,
+                radius=12,
+            )
+            head = BoxLayout(
+                orientation="horizontal",
+                size_hint_y=None,
+                height=dp(24),
+            )
+            head.add_widget(
+                make_label(
+                    date_text,
+                    font_size=dp(13),
+                    bold=True,
+                    color=TEXT,
+                    height=dp(24),
+                )
+            )
+            head.add_widget(
+                make_label(
+                    self.day_ganzhi_text(date_text),
+                    font_size=dp(9.5),
+                    color=MUTED,
+                    halign="right",
+                    height=dp(24),
+                )
+            )
+            row.add_widget(head)
+            row.add_widget(
+                make_label(
+                    preview or "（空）",
+                    font_size=dp(10.5),
+                    color=MUTED if preview else ORANGE,
+                    height=dp(20),
+                )
+            )
+            row.add_widget(
+                make_button(
+                    "编辑 ›",
+                    size_hint=(None, None),
+                    size=(dp(62), dp(24)),
+                    font_size=dp(10),
+                    background_color=GREEN_LIGHT,
+                    color=GREEN,
+                    on_release=lambda _btn, k=key: self.open_editor(k),
+                )
+            )
+            self.list_layout.add_widget(row)
+
+    # --------------------------------------------------------
+    def open_editor(self, key):
+        today = datetime.now().strftime("%Y-%m-%d")
+        entry = self.entries.get(key, {}) if key else {}
+        content = BoxLayout(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(6),
+        )
+        content.add_widget(
+            make_label(
+                "日期（YYYY-MM-DD）",
+                font_size=dp(10.5),
+                color=MUTED,
+                height=dp(18),
+            )
+        )
+        date_input = make_input(
+            text=entry.get("date", today),
+            height=dp(40),
+            font_size=dp(12.5),
+        )
+        content.add_widget(date_input)
+        content.add_widget(
+            make_label(
+                "今天发生了什么",
+                font_size=dp(10.5),
+                color=MUTED,
+                height=dp(18),
+            )
+        )
+        text_input = TextInput(
+            text=entry.get("text", ""),
+            multiline=True,
+            font_size=dp(12.5),
+            background_normal="",
+            background_active="",
+            background_color=CARD_SOFT,
+            foreground_color=TEXT,
+            cursor_color=GREEN,
+            padding=[dp(10), dp(10), dp(10), dp(10)],
+            **font_args()
+        )
+        content.add_widget(text_input)
+        message = make_label(
+            "",
+            font_size=dp(10),
+            color=RED,
+            height=dp(22),
+        )
+        content.add_widget(message)
+        popup = Popup(
+            title="写日记",
+            content=content,
+            size_hint=(0.94, 0.78),
+            auto_dismiss=False,
+        )
+
+        def do_save(*_):
+            date_text = date_input.text.strip()
+            try:
+                datetime.strptime(date_text, "%Y-%m-%d")
+            except ValueError:
+                message.text = "日期格式不对，应为 YYYY-MM-DD"
+                return
+            body = text_input.text.strip()
+            if not body:
+                message.text = "日记内容不能为空"
+                return
+            self.entries[date_text] = {
+                "date": date_text,
+                "text": body,
+                "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            try:
+                self.save_entries()
+            except Exception as exc:
+                message.text = f"保存失败：{exc}"
+                return
+            self.refresh_list()
+            popup.dismiss()
+
+        def do_delete(*_):
+            if not key:
+                popup.dismiss()
+                return
+            self.entries.pop(key, None)
+            try:
+                self.save_entries()
+            except Exception as exc:
+                message.text = f"删除失败：{exc}"
+                return
+            self.refresh_list()
+            popup.dismiss()
+
+        buttons = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(42),
+            spacing=dp(8),
+        )
+        buttons.add_widget(
+            make_button(
+                "取消",
+                height=dp(42),
+                font_size=dp(12.5),
+                background_color=(0.520, 0.540, 0.520, 1),
+                on_release=lambda *_: popup.dismiss(),
+            )
+        )
+        if key:
+            buttons.add_widget(
+                make_button(
+                    "删除",
+                    height=dp(42),
+                    font_size=dp(12.5),
+                    background_color=(0.780, 0.320, 0.280, 1),
+                    on_release=do_delete,
+                )
+            )
+        buttons.add_widget(
+            make_button(
+                "保存",
+                height=dp(42),
+                font_size=dp(12.5),
+                on_release=do_save,
+            )
+        )
+        content.add_widget(buttons)
+        popup.open()
+
+    def go_back(self, *_):
+        self.manager.current = "home"
+
+
+# ============================================================
+# 标签管理
+# ============================================================
+class TagsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(16), dp(8), dp(16), dp(8)],
+            spacing=dp(8),
+        )
+        top = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(40),
+            spacing=dp(10),
+        )
+        top.add_widget(
+            make_button(
+                "‹ 首页",
+                size_hint=(None, None),
+                size=(dp(72), dp(34)),
+                font_size=dp(12),
+                background_color=(0.420, 0.450, 0.410, 1),
+                on_release=self.go_back,
+            )
+        )
+        top.add_widget(
+            make_label(
+                "标签管理",
+                font_size=dp(22),
+                bold=True,
+                color=GREEN,
+                height=dp(36),
+            )
+        )
+        self.count_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            halign="right",
+            height=dp(36),
+        )
+        top.add_widget(self.count_label)
+        root.add_widget(top)
+
+        self.list_layout = GridLayout(
+            cols=1,
+            spacing=dp(6),
+            size_hint_y=None,
+        )
+        self.list_layout.bind(
+            minimum_height=self.list_layout.setter("height")
+        )
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        scroll.add_widget(self.list_layout)
+        root.add_widget(scroll)
+        self.add_widget(root)
+
+    def on_pre_enter(self, *_):
+        self.refresh_list()
+
+    def refresh_list(self):
+        self.list_layout.clear_widgets()
+        home = self.manager.get_screen("home")
+        counter = {}
+        for item in home.saved_charts.values():
+            for tag in item.get("tags", []) or []:
+                counter[tag] = counter.get(tag, 0) + 1
+        self.count_label.text = (
+            f"{len(counter)} 个标签" if counter else ""
+        )
+        if not counter:
+            self.list_layout.add_widget(
+                make_label(
+                    "还没有标签。在时间局列表点 # 给某人加标签。",
+                    font_size=dp(12),
+                    color=MUTED,
+                    halign="center",
+                    height=dp(70),
+                )
+            )
+            return
+        for tag in sorted(counter.keys(), key=lambda x: (-counter[x], x)):
+            row = Card(
+                orientation="horizontal",
+                padding=[dp(12), dp(6), dp(10), dp(6)],
+                spacing=dp(8),
+                size_hint_y=None,
+                height=dp(52),
+                card_color=CARD,
+                radius=12,
+            )
+            row.add_widget(
+                make_label(
+                    "# " + str(tag),
+                    font_size=dp(14),
+                    bold=True,
+                    color=GOLD,
+                    height=dp(40),
+                )
+            )
+            row.add_widget(
+                make_label(
+                    f"{counter[tag]} 人",
+                    font_size=dp(10.5),
+                    color=MUTED,
+                    halign="right",
+                    height=dp(40),
+                )
+            )
+            self.list_layout.add_widget(row)
+
+    def go_back(self, *_):
+        self.manager.current = "home"
+
+
+# ============================================================
 # 添加时间局
 # ============================================================
 class AddScreen(Screen):
@@ -2872,6 +3330,8 @@ class WuxingApp(App):
         manager.add_widget(HomeScreen(name="home"))
         manager.add_widget(SettingsScreen(name="settings"))
         manager.add_widget(SkillsScreen(name="skills"))
+        manager.add_widget(DiaryScreen(name="diary"))
+        manager.add_widget(TagsScreen(name="tags"))
         manager.add_widget(SkillDetailScreen(name="skill_detail"))
         manager.add_widget(AddScreen(name="add"))
         manager.add_widget(DetailScreen(name="detail"))
