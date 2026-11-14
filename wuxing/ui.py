@@ -57,6 +57,10 @@ LINE = (0.880, 0.850, 0.790, 1)
 ORANGE = (0.760, 0.400, 0.120, 1)
 RED = (0.780, 0.200, 0.160, 1)
 
+# AI 中转服务的默认地址与模型（口令由用户自己填写）
+AI_DEFAULT_ENDPOINT = "https://wuxing-ai.zkn12306.workers.dev"
+AI_DEFAULT_MODEL = "deepseek-chat"
+
 # 五行配色：木绿、火红、土棕、金赭、水蓝
 ELEMENT_COLORS = {
     "木": (0.090, 0.420, 0.260, 1),
@@ -400,14 +404,6 @@ class HomeScreen(Screen):
         )
         self.search_input.bind(text=self.on_search_text)
         top_bar.add_widget(self.search_input)
-        top_bar.add_widget(
-            make_circle_button(
-                "信",
-                diameter=38,
-                bg=GREEN_LIGHT,
-                on_release=self.open_messages,
-            )
-        )
         root.add_widget(top_bar)
 
         # ---------------- 即时局 ----------------
@@ -434,16 +430,6 @@ class HomeScreen(Screen):
             )
         )
         title_row.add_widget(Widget())
-        self.gender_button = make_button(
-            "男",
-            size_hint=(None, None),
-            size=(dp(34), dp(22)),
-            font_size=dp(11),
-            background_color=GREEN_LIGHT,
-            color=GREEN,
-        )
-        self.gender_button.bind(on_release=self.toggle_current_gender)
-        title_row.add_widget(self.gender_button)
         main_card.add_widget(title_row)
 
         self.pillars_grid = GridLayout(
@@ -1050,14 +1036,6 @@ class HomeScreen(Screen):
             + "　公历:" + now.strftime("%Y-%m-%d %H:%M")
         )
 
-    def toggle_current_gender(self, *_):
-        self.current_gender = (
-            "女" if self.current_gender == "男" else "男"
-        )
-        self.gender_button.text = self.current_gender
-        self._last_minute_key = None
-        self.refresh_current(force=True)
-
     def refresh_current(self, *_args, force=False):
         if (
             self.current_latitude is None
@@ -1413,9 +1391,6 @@ class HomeScreen(Screen):
             self.manager.current = "tags"
             return
         self.show_placeholder(title)
-
-    def open_messages(self, *_):
-        self.show_placeholder("消息")
 
     def show_placeholder(self, title):
         content = BoxLayout(
@@ -1856,25 +1831,41 @@ class SettingsScreen(Screen):
             self.ai_status_label.text = "AI 模块不可用"
             return
         config = ai_module.load_config(self.home.data_dir)
-        self.ai_endpoint_input.text = config.get("endpoint", "")
+        self.ai_endpoint_input.text = (
+            config.get("endpoint", "") or AI_DEFAULT_ENDPOINT
+        )
         self.ai_token_input.text = config.get("token", "")
-        self.ai_model_input.text = config.get("model", "")
-        if ai_module.is_configured(config):
+        self.ai_model_input.text = (
+            config.get("model", "") or AI_DEFAULT_MODEL
+        )
+        effective = dict(config)
+        if not effective.get("endpoint"):
+            effective["endpoint"] = AI_DEFAULT_ENDPOINT
+        if not effective.get("model"):
+            effective["model"] = AI_DEFAULT_MODEL
+        if ai_module.is_configured(effective):
             self.ai_status_label.text = (
-                "已配置 · " + ai_module.describe_config(config)
+                "已配置 · " + ai_module.describe_config(effective)
             )
         else:
-            self.ai_status_label.text = "未配置（填写后点保存）"
+            self.ai_status_label.text = (
+                "未配置：请填写访问口令后点「保存配置」"
+            )
 
     def save_ai_config(self, *_):
         if ai_module is None:
             self.ai_status_label.text = "AI 模块不可用"
             return
         config = {
-            "endpoint": self.ai_endpoint_input.text.strip(),
+            "endpoint": (
+                self.ai_endpoint_input.text.strip()
+                or AI_DEFAULT_ENDPOINT
+            ),
             "token": self.ai_token_input.text.strip(),
-            "model": self.ai_model_input.text.strip()
-            or ai_module.DEFAULT_MODEL,
+            "model": (
+                self.ai_model_input.text.strip()
+                or AI_DEFAULT_MODEL
+            ),
         }
         try:
             ai_module.save_config(self.home.data_dir, config)
@@ -3350,6 +3341,10 @@ class DetailScreen(Screen):
             return
         home = self.manager.get_screen("home")
         config = ai_module.load_config(home.data_dir)
+        if not config.get("endpoint"):
+            config["endpoint"] = AI_DEFAULT_ENDPOINT
+        if not config.get("model"):
+            config["model"] = AI_DEFAULT_MODEL
         if not ai_module.is_configured(config):
             self.ai_status.text = "请先到「设置」填写 AI 中转地址和口令"
             return
