@@ -36,6 +36,11 @@ except Exception:
     def get_library(*_args, **_kwargs):
         raise RuntimeError("技能库模块不可用")
 
+try:
+    from . import ai as ai_module
+except Exception:
+    ai_module = None
+
 # ============================================================
 # 颜色与字体
 # ============================================================
@@ -1516,6 +1521,93 @@ class SettingsScreen(Screen):
 
         content.add_widget(
             make_label(
+                "AI 解读",
+                font_size=dp(13),
+                bold=True,
+                color=GREEN,
+                height=dp(26),
+            )
+        )
+        ai_card = Card(
+            orientation="vertical",
+            padding=dp(14),
+            spacing=dp(4),
+            size_hint_y=None,
+            height=dp(232),
+            card_color=CARD,
+        )
+        self.ai_status_label = make_label(
+            "检查中……",
+            font_size=dp(10.5),
+            color=MUTED,
+            height=dp(20),
+        )
+        ai_card.add_widget(self.ai_status_label)
+        ai_card.add_widget(
+            make_label(
+                "中转地址",
+                font_size=dp(10.5),
+                color=MUTED,
+                height=dp(16),
+            )
+        )
+        self.ai_endpoint_input = make_input(
+            hint_text="https://wuxing-ai.xxx.workers.dev",
+            height=dp(38),
+            font_size=dp(11),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        ai_card.add_widget(self.ai_endpoint_input)
+        ai_card.add_widget(
+            make_label(
+                "访问口令",
+                font_size=dp(10.5),
+                color=MUTED,
+                height=dp(16),
+            )
+        )
+        self.ai_token_input = make_input(
+            hint_text="APP_TOKEN",
+            height=dp(38),
+            font_size=dp(11),
+            password=True,
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        ai_card.add_widget(self.ai_token_input)
+        ai_card.add_widget(
+            make_label(
+                "模型名",
+                font_size=dp(10.5),
+                color=MUTED,
+                height=dp(16),
+            )
+        )
+        self.ai_model_input = make_input(
+            hint_text="deepseek-chat",
+            height=dp(38),
+            font_size=dp(11),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        ai_card.add_widget(self.ai_model_input)
+        content.add_widget(ai_card)
+
+        ai_buttons = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(42),
+            spacing=dp(8),
+        )
+        save_ai_button = make_button(
+            "保存配置",
+            height=dp(42),
+            font_size=dp(12.5),
+            on_release=self.save_ai_config,
+        )
+        ai_buttons.add_widget(save_ai_button)
+        content.add_widget(ai_buttons)
+
+        content.add_widget(
+            make_label(
                 "技能库",
                 font_size=dp(13),
                 bold=True,
@@ -1601,6 +1693,41 @@ class SettingsScreen(Screen):
         self.home = self.manager.get_screen("home")
         self.refresh_location()
         self.refresh_skills_status()
+        self.refresh_ai_config()
+
+    def refresh_ai_config(self):
+        if ai_module is None:
+            self.ai_status_label.text = "AI 模块不可用"
+            return
+        config = ai_module.load_config(self.home.data_dir)
+        self.ai_endpoint_input.text = config.get("endpoint", "")
+        self.ai_token_input.text = config.get("token", "")
+        self.ai_model_input.text = config.get("model", "")
+        if ai_module.is_configured(config):
+            self.ai_status_label.text = (
+                "已配置 · " + ai_module.describe_config(config)
+            )
+        else:
+            self.ai_status_label.text = "未配置（填写后点保存）"
+
+    def save_ai_config(self, *_):
+        if ai_module is None:
+            self.ai_status_label.text = "AI 模块不可用"
+            return
+        config = {
+            "endpoint": self.ai_endpoint_input.text.strip(),
+            "token": self.ai_token_input.text.strip(),
+            "model": self.ai_model_input.text.strip()
+            or ai_module.DEFAULT_MODEL,
+        }
+        try:
+            ai_module.save_config(self.home.data_dir, config)
+        except Exception as exc:
+            self.ai_status_label.text = f"保存失败：{exc}"
+            return
+        self.ai_status_label.text = (
+            "已保存 · " + ai_module.describe_config(config)
+        )
 
     def open_skills(self, *_):
         self.manager.current = "skills"
@@ -2186,6 +2313,9 @@ class DetailScreen(Screen):
         root.add_widget(detail_scroll)
         self.add_widget(root)
         self._detail_request_id = 0
+        self._current_key = None
+        self._current_chart = None
+        self._current_gender = "男"
 
     def show_chart(self, key):
         home = self.manager.get_screen("home")
@@ -2205,6 +2335,9 @@ class DetailScreen(Screen):
             longitude = home.current_longitude
         if not timezone_name:
             timezone_name = home.timezone_name
+        self._current_key = key
+        self._current_gender = gender
+        self._current_chart = None
         self.title_label.text = name
         self.time_label.text = time_text
         self.show_message("正在计算排盘结果……")
@@ -2515,6 +2648,134 @@ class DetailScreen(Screen):
             self.body.add_widget(warning_card)
 
         self.body.add_widget(Widget(size_hint_y=None, height=dp(8)))
+        self.render_ai_section(chart)
+
+    def render_ai_section(self, chart):
+        self._current_chart = chart
+        self.body.add_widget(section_title("AI 解读"))
+        ai_card = Card(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(6),
+            size_hint_y=None,
+            height=dp(196),
+            card_color=CARD,
+        )
+        tip = make_label(
+            "填写想问的问题，点下方按钮由 AI 结合技能库条文解读。",
+            font_size=dp(9.5),
+            color=MUTED,
+            height=dp(26),
+        )
+        ai_card.add_widget(tip)
+        self.ai_question_input = make_input(
+            hint_text="例如：这命婚姻和财运如何？",
+            height=dp(40),
+            font_size=dp(12),
+            padding=[dp(10), dp(10), dp(10), dp(10)],
+        )
+        ai_card.add_widget(self.ai_question_input)
+        self.ai_button = make_button(
+            "开始 AI 解读",
+            height=dp(42),
+            font_size=dp(13),
+            on_release=self.start_ai_interpret,
+        )
+        ai_card.add_widget(self.ai_button)
+        self.ai_status = make_label(
+            "",
+            font_size=dp(9.5),
+            color=MUTED,
+            height=dp(30),
+        )
+        ai_card.add_widget(self.ai_status)
+        self.body.add_widget(ai_card)
+
+        self.ai_result_label = make_label(
+            "",
+            font_size=dp(11),
+            color=TEXT,
+            valign="top",
+            halign="left",
+            size_hint_y=None,
+            height=dp(0),
+        )
+        self.body.add_widget(self.ai_result_label)
+
+    def start_ai_interpret(self, *_):
+        if ai_module is None:
+            self.ai_status.text = "AI 模块不可用"
+            return
+        if self._current_chart is None:
+            self.ai_status.text = "请先等待排盘完成"
+            return
+        home = self.manager.get_screen("home")
+        config = ai_module.load_config(home.data_dir)
+        if not ai_module.is_configured(config):
+            self.ai_status.text = "请先到「设置」填写 AI 中转地址和口令"
+            return
+        question = ""
+        try:
+            question = self.ai_question_input.text.strip()
+        except Exception:
+            question = ""
+        self.ai_button.disabled = True
+        self.ai_button.text = "解读中……"
+        self.ai_status.text = "正在检索技能库并请求大模型，请稍候（约 10-60 秒）"
+        self.ai_result_label.text = ""
+        self.ai_result_label.height = dp(0)
+        chart = self._current_chart
+        gender = self._current_gender
+        request_id = self._detail_request_id
+
+        def work():
+            try:
+                library = get_library()
+                library.load()
+            except Exception:
+                library = None
+            try:
+                text = ai_module.interpret(
+                    chart,
+                    gender,
+                    question,
+                    config,
+                    library=library,
+                )
+                error = None
+            except Exception as exc:
+                text = ""
+                error = f"{type(exc).__name__}: {exc}"
+            Clock.schedule_once(
+                lambda _dt: self.set_ai_result(
+                    request_id,
+                    text,
+                    error,
+                ),
+                0,
+            )
+
+        Thread(target=work, daemon=True).start()
+
+    def set_ai_result(self, request_id, text, error):
+        if request_id != self._detail_request_id:
+            return
+        try:
+            self.ai_button.disabled = False
+            self.ai_button.text = "重新解读"
+        except Exception:
+            pass
+        if error:
+            self.ai_status.text = "解读失败"
+            self.ai_result_label.text = "【出错】" + str(error)
+        else:
+            self.ai_status.text = "解读完成"
+            self.ai_result_label.text = text
+        self.ai_result_label.texture_update()
+        self.ai_result_label.height = max(
+            dp(0),
+            self.ai_result_label.texture_size[1] + dp(16),
+        )
 
     def go_back(self, *_):
         self.manager.current = "home"
