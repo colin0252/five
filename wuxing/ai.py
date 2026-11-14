@@ -325,6 +325,14 @@ def call_relay(config, messages, timeout=DEFAULT_TIMEOUT):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Accept": "application/json",
+        # Cloudflare 会拦截 Python 默认的 User-Agent（Error 1010），
+        # 伪装成 iPhone Safari 的 UA，避免请求在边缘节点被挡掉。
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+        "Accept-Language": "zh-CN,zh;q=0.9",
     }
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -343,6 +351,11 @@ def call_relay(config, messages, timeout=DEFAULT_TIMEOUT):
         if exc.code == 429:
             raise AIError(
                 "请求过于频繁或额度不足（429）。"
+            ) from exc
+        if exc.code == 403 and "1010" in detail:
+            raise AIError(
+                "中转服务被 Cloudflare 拦截（Error 1010）。"
+                "请确认用的是最新版 App（新版已伪装浏览器标识）。"
             ) from exc
         raise AIError(
             f"中转服务返回 HTTP {exc.code}。{detail}"
