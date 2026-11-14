@@ -501,8 +501,8 @@ class HomeScreen(Screen):
         icon_items = (
             ("奇", "奇门遁甲", GREEN, "qimen"),
             ("罗", "罗盘", RED, "compass"),
-            ("标", "标签管理", GOLD, "tags"),
             ("日", "日记", (0.20, 0.38, 0.62, 1), "diary"),
+            ("更", "更多", GOLD, "more"),
         )
         for icon_char, icon_title, icon_color, icon_action in icon_items:
             item = BoxLayout(
@@ -1397,6 +1397,9 @@ class HomeScreen(Screen):
             return
         if action == "qimen":
             self.manager.current = "qimen"
+            return
+        if action == "more":
+            self.manager.current = "more"
             return
         self.show_placeholder(title)
 
@@ -3552,87 +3555,203 @@ class QimenScreen(Screen):
         )
         root.add_widget(top)
 
-        self.time_label = make_label(
-            "",
-            font_size=dp(10.5),
-            color=MUTED,
-            height=dp(20),
-        )
-        root.add_widget(self.time_label)
-
-        self.summary_label = make_label(
-            "",
-            font_size=dp(10.5),
-            color=TEXT,
-            height=dp(56),
-        )
-        root.add_widget(self.summary_label)
-
-        self.grid = GridLayout(
-            cols=3,
-            spacing=dp(6),
+        form_card = Card(
+            orientation="vertical",
+            padding=dp(10),
+            spacing=dp(3),
             size_hint_y=None,
-            height=dp(280),
+            height=dp(196),
+            card_color=CARD,
         )
-        root.add_widget(self.grid)
+        form_card.add_widget(
+            make_label(
+                "时间（YYYY-MM-DD HH:MM）",
+                font_size=dp(10),
+                color=MUTED,
+                height=dp(16),
+            )
+        )
+        self.time_input = make_input(
+            height=dp(36),
+            font_size=dp(12.5),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        form_card.add_widget(self.time_input)
+        coord_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(36),
+            spacing=dp(6),
+        )
+        self.lat_input = make_input(
+            hint_text="纬度",
+            height=dp(36),
+            font_size=dp(12),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        self.lon_input = make_input(
+            hint_text="经度",
+            height=dp(36),
+            font_size=dp(12),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        coord_row.add_widget(self.lat_input)
+        coord_row.add_widget(self.lon_input)
+        form_card.add_widget(coord_row)
+        self.tz_input = make_input(
+            hint_text="时区，如 Asia/Shanghai",
+            height=dp(34),
+            font_size=dp(11.5),
+            padding=[dp(8), dp(8), dp(8), dp(8)],
+        )
+        form_card.add_widget(self.tz_input)
+        button_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(38),
+            spacing=dp(6),
+        )
+        button_row.add_widget(
+            make_button(
+                "用当前时间地点",
+                height=dp(38),
+                font_size=dp(11),
+                background_color=(0.360, 0.440, 0.380, 1),
+                on_release=self.use_current,
+            )
+        )
+        button_row.add_widget(
+            make_button(
+                "排盘",
+                height=dp(38),
+                font_size=dp(12.5),
+                on_release=self.calculate,
+            )
+        )
+        form_card.add_widget(button_row)
+        root.add_widget(form_card)
 
         self.status_label = make_label(
             "",
             font_size=dp(9.5),
             color=ORANGE,
-            height=dp(30),
+            height=dp(18),
         )
         root.add_widget(self.status_label)
 
-        legend = make_label(
-            "每格：八神 / 九星·八门 / 天盘干／地盘干 / 宫位",
-            font_size=dp(9),
-            color=MUTED,
-            height=dp(20),
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(4),
+            size_hint_y=None,
         )
-        root.add_widget(legend)
-        root.add_widget(Widget())
+        content.bind(minimum_height=content.setter("height"))
+
+        self.summary_label = make_label(
+            "",
+            font_size=dp(10),
+            color=TEXT,
+            height=dp(50),
+        )
+        content.add_widget(self.summary_label)
+
+        self.grid = GridLayout(
+            cols=3,
+            spacing=dp(5),
+            size_hint_y=None,
+            height=dp(272),
+        )
+        content.add_widget(self.grid)
+
+        content.add_widget(
+            make_label(
+                "每格：八神 / 九星·八门 / 天盘干／地盘干 / 宫位",
+                font_size=dp(8.5),
+                color=MUTED,
+                height=dp(16),
+            )
+        )
+        content.add_widget(Widget(size_hint_y=None, height=dp(6)))
+
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        scroll.add_widget(content)
+        root.add_widget(scroll)
         self.add_widget(root)
 
     def on_pre_enter(self, *_):
-        self.refresh()
+        home = self.manager.get_screen("home")
+        zone = safe_zone(home.timezone_name) or safe_zone("Asia/Shanghai")
+        if home.current_latitude is not None:
+            self.lat_input.text = "%.4f" % float(home.current_latitude)
+        if home.current_longitude is not None:
+            self.lon_input.text = "%.4f" % float(home.current_longitude)
+        if home.timezone_name:
+            self.tz_input.text = home.timezone_name
+        elif not self.tz_input.text.strip():
+            self.tz_input.text = "Asia/Shanghai"
+        if not self.time_input.text.strip():
+            self.time_input.text = datetime.now(zone).strftime("%Y-%m-%d %H:%M")
+        self.calculate()
 
     def go_back(self, *_):
         self.manager.current = "home"
 
-    def refresh(self, *_):
+    def use_current(self, *_):
+        home = self.manager.get_screen("home")
+        zone = safe_zone(home.timezone_name) or safe_zone("Asia/Shanghai")
+        self.time_input.text = datetime.now(zone).strftime("%Y-%m-%d %H:%M")
+        if home.current_latitude is not None:
+            self.lat_input.text = "%.4f" % float(home.current_latitude)
+        if home.current_longitude is not None:
+            self.lon_input.text = "%.4f" % float(home.current_longitude)
+        if home.timezone_name:
+            self.tz_input.text = home.timezone_name
+
+    def calculate(self, *_):
         if build_qimen is None:
             self.status_label.text = "奇门模块不可用（qimen.py 未上传）"
             return
-        home = self.manager.get_screen("home")
-        if home.current_latitude is None or home.current_longitude is None:
-            self.status_label.text = "请先在设置里获取定位或设置城市"
+        try:
+            naive = datetime.strptime(
+                self.time_input.text.strip(), "%Y-%m-%d %H:%M"
+            )
+        except Exception:
+            self.status_label.text = "时间格式不对，要 YYYY-MM-DD HH:MM"
             return
-        zone = safe_zone(home.timezone_name)
+        tz_name = self.tz_input.text.strip() or "Asia/Shanghai"
+        zone = safe_zone(tz_name)
         if zone is None:
-            self.status_label.text = "尚未获取时区，请先在设置里获取定位"
+            self.status_label.text = "时区无法识别：" + tz_name
             return
-        now = datetime.now(zone)
-        self.time_label.text = "排盘时刻：" + now.strftime("%Y-%m-%d %H:%M")
+        try:
+            latitude = float(self.lat_input.text.strip())
+            longitude = float(self.lon_input.text.strip())
+        except Exception:
+            self.status_label.text = "纬度和经度要填数字"
+            return
+        if not valid_coordinates(latitude, longitude):
+            self.status_label.text = "经纬度超出范围"
+            return
+        moment = naive.replace(tzinfo=zone)
+        home = self.manager.get_screen("home")
+        solar_mode = home.solar_mode
         self.status_label.text = "正在排盘……"
         self._request_id += 1
         request_id = self._request_id
-        latitude = float(home.current_latitude)
-        longitude = float(home.current_longitude)
-        timezone_name = home.timezone_name
-        solar_mode = home.solar_mode
 
         def work():
             try:
                 chart = build_chart(
-                    now,
+                    moment,
                     longitude,
                     "男",
                     latitude=latitude,
-                    timezone_info=timezone_name,
+                    timezone_info=tz_name,
                     solar_mode=solar_mode,
                 )
-                result = build_qimen(chart)
+                # build_chart 返回的 birth 是去掉了时区的当地钟表时间，
+                # 奇门定局必须用带时区的时刻，这里换上。
+                chart.birth = moment
+                result = build_qimen(chart, moment=moment)
                 error = None
             except Exception as exc:
                 result = None
@@ -3669,6 +3788,113 @@ class QimenScreen(Screen):
 
 
 # ============================================================
+# 更多
+# ============================================================
+class MoreScreen(Screen):
+    """更多功能入口。"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(14), dp(8), dp(14), dp(8)],
+            spacing=dp(8),
+        )
+        top = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(44),
+            spacing=dp(10),
+        )
+        top.add_widget(
+            make_button(
+                "‹ 首页",
+                size_hint=(None, None),
+                size=(dp(74), dp(34)),
+                font_size=dp(12),
+                background_color=(0.420, 0.450, 0.410, 1),
+                on_release=self.go_back,
+            )
+        )
+        top.add_widget(
+            make_label(
+                "更多",
+                font_size=dp(22),
+                bold=True,
+                color=GREEN,
+                height=dp(40),
+            )
+        )
+        root.add_widget(top)
+
+        scroll = ScrollView(do_scroll_x=False, bar_width=dp(2))
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(6),
+            size_hint_y=None,
+        )
+        content.bind(minimum_height=content.setter("height"))
+
+        items = (
+            ("标", "标签管理", GOLD, "tags"),
+            ("日", "日记", (0.20, 0.38, 0.62, 1), "diary"),
+            ("书", "技能库", GREEN, "skills"),
+            ("设", "设置", (0.420, 0.450, 0.410, 1), "settings"),
+        )
+        for char, title, color, action in items:
+            row = Card(
+                orientation="horizontal",
+                padding=[dp(10), dp(6), dp(10), dp(6)],
+                spacing=dp(10),
+                size_hint_y=None,
+                height=dp(54),
+                card_color=CARD,
+            )
+            row.add_widget(
+                make_circle_button(
+                    char,
+                    diameter=30,
+                    bg=(0.940, 0.930, 0.900, 1),
+                    fg=color,
+                    on_release=lambda a=action: self.open_item(a),
+                )
+            )
+            row.add_widget(
+                make_label(
+                    title,
+                    font_size=dp(14),
+                    color=TEXT,
+                    height=dp(30),
+                )
+            )
+            button = make_button(
+                "›",
+                size_hint=(None, None),
+                size=(dp(30), dp(30)),
+                font_size=dp(16),
+                background_color=(0.900, 0.890, 0.860, 1),
+                color=MUTED,
+                on_release=lambda a=action: self.open_item(a),
+            )
+            row.add_widget(button)
+            content.add_widget(row)
+
+        content.add_widget(Widget(size_hint_y=None, height=dp(10)))
+        scroll.add_widget(content)
+        root.add_widget(scroll)
+        self.add_widget(root)
+
+    def go_back(self, *_):
+        self.manager.current = "home"
+
+    def open_item(self, action):
+        if action == "skills":
+            self.manager.current = "skills"
+            return
+        self.manager.current = action
+
+
+# ============================================================
 # 应用入口
 # ============================================================
 class WuxingApp(App):
@@ -3686,4 +3912,5 @@ class WuxingApp(App):
         manager.add_widget(AddScreen(name="add"))
         manager.add_widget(DetailScreen(name="detail"))
         manager.add_widget(QimenScreen(name="qimen"))
+        manager.add_widget(MoreScreen(name="more"))
         return manager
