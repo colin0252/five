@@ -30,6 +30,12 @@ try:
 except Exception:
     solar_to_lunar = None
 
+try:
+    from .skills import get_library
+except Exception:
+    def get_library(*_args, **_kwargs):
+        raise RuntimeError("技能库模块不可用")
+
 # ============================================================
 # 颜色与字体
 # ============================================================
@@ -1510,6 +1516,49 @@ class SettingsScreen(Screen):
 
         content.add_widget(
             make_label(
+                "技能库",
+                font_size=dp(13),
+                bold=True,
+                color=GREEN,
+                height=dp(26),
+            )
+        )
+        skills_card = Card(
+            orientation="vertical",
+            padding=dp(14),
+            spacing=dp(3),
+            size_hint_y=None,
+            height=dp(96),
+            card_color=CARD,
+        )
+        self.skills_title = make_label(
+            "盘叔盲派断法库",
+            font_size=dp(13),
+            bold=True,
+            color=TEXT,
+            height=dp(26),
+        )
+        self.skills_status = make_label(
+            "正在检查技能库……",
+            font_size=dp(10.5),
+            color=MUTED,
+            height=dp(34),
+        )
+        skills_card.add_widget(self.skills_title)
+        skills_card.add_widget(self.skills_status)
+        content.add_widget(skills_card)
+
+        open_skills_button = make_button(
+            "打开技能库",
+            height=dp(44),
+            font_size=dp(13),
+            background_color=(0.360, 0.440, 0.380, 1),
+            on_release=self.open_skills,
+        )
+        content.add_widget(open_skills_button)
+
+        content.add_widget(
+            make_label(
                 "关于",
                 font_size=dp(13),
                 bold=True,
@@ -1551,6 +1600,37 @@ class SettingsScreen(Screen):
     def on_pre_enter(self, *_):
         self.home = self.manager.get_screen("home")
         self.refresh_location()
+        self.refresh_skills_status()
+
+    def open_skills(self, *_):
+        self.manager.current = "skills"
+
+    def refresh_skills_status(self):
+        try:
+            library = get_library()
+        except Exception as exc:
+            self.skills_status.text = (
+                "技能库不可用：" + str(exc)
+            )
+            return
+        try:
+            library.load()
+            info = library.stats()
+        except Exception as exc:
+            self.skills_status.text = (
+                "读取技能库失败：" + str(exc)
+            )
+            return
+        if not info.get("loaded"):
+            self.skills_status.text = (
+                "未找到 skills.zip（请上传到仓库根目录）"
+            )
+            return
+        self.skills_status.text = (
+            f"已加载 {info['skills']} 个技能"
+            f" · {info['references']} 篇参考"
+            f" · 约 {info['chars'] // 1000} 千字"
+        )
 
     def refresh_location(self):
         if self.home is None:
@@ -1584,6 +1664,335 @@ class SettingsScreen(Screen):
 
     def go_back(self, *_):
         self.manager.current = "home"
+
+
+# ============================================================
+# 技能库
+# ============================================================
+class SkillsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.library = None
+        self.filtered = []
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(16), dp(8), dp(16), dp(8)],
+            spacing=dp(8),
+        )
+
+        top = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(40),
+            spacing=dp(10),
+        )
+        back_button = make_button(
+            "‹ 设置",
+            size_hint=(None, None),
+            size=(dp(72), dp(34)),
+            font_size=dp(12),
+            background_color=(0.420, 0.450, 0.410, 1),
+            on_release=self.go_back,
+        )
+        top.add_widget(back_button)
+        top.add_widget(
+            make_label(
+                "技能库",
+                font_size=dp(22),
+                bold=True,
+                color=GREEN,
+                height=dp(36),
+            )
+        )
+        self.count_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            halign="right",
+            height=dp(36),
+        )
+        top.add_widget(self.count_label)
+        root.add_widget(top)
+
+        self.search_input = make_input(
+            hint_text="搜索技能或规则条文，例如：羊刃、婚姻、反局",
+            height=dp(40),
+            font_size=dp(12.5),
+        )
+        self.search_input.bind(text=self.on_search)
+        root.add_widget(self.search_input)
+
+        self.status_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            height=dp(22),
+        )
+        root.add_widget(self.status_label)
+
+        self.list_layout = GridLayout(
+            cols=1,
+            spacing=dp(6),
+            size_hint_y=None,
+        )
+        self.list_layout.bind(
+            minimum_height=self.list_layout.setter("height")
+        )
+        scroll = ScrollView(
+            do_scroll_x=False,
+            bar_width=dp(2),
+        )
+        scroll.add_widget(self.list_layout)
+        root.add_widget(scroll)
+        self.add_widget(root)
+
+    def on_pre_enter(self, *_):
+        try:
+            self.library = get_library()
+            self.library.load()
+        except Exception as exc:
+            self.library = None
+            self.status_label.text = "技能库不可用：" + str(exc)
+            return
+        info = self.library.stats()
+        if not info.get("loaded"):
+            self.status_label.text = (
+                "未找到 skills.zip，请先上传到仓库根目录。"
+            )
+        else:
+            self.status_label.text = (
+                f"来源 {info.get('source', '')}"
+                f" · {info['skills']} 个技能"
+            )
+        self.render()
+
+    def on_search(self, _instance, _value):
+        self.render()
+
+    def go_back(self, *_):
+        self.manager.current = "settings"
+
+    def render(self):
+        self.list_layout.clear_widgets()
+        if self.library is None:
+            return
+        keyword = ""
+        try:
+            keyword = self.search_input.text.strip()
+        except Exception:
+            keyword = ""
+
+        if keyword:
+            hits = self.library.search(keyword, limit=60)
+            self.count_label.text = f"{len(hits)} 条"
+            if not hits:
+                self.list_layout.add_widget(
+                    make_label(
+                        "没有找到相关条文",
+                        font_size=dp(12),
+                        color=MUTED,
+                        halign="center",
+                        height=dp(80),
+                    )
+                )
+                return
+            for hit in hits:
+                card = Card(
+                    orientation="vertical",
+                    padding=dp(10),
+                    spacing=dp(1),
+                    size_hint_y=None,
+                    height=dp(76),
+                    card_color=CARD,
+                    radius=10,
+                )
+                card.add_widget(
+                    make_label(
+                        hit["snippet"],
+                        font_size=dp(11),
+                        color=TEXT,
+                        height=dp(44),
+                    )
+                )
+                card.add_widget(
+                    make_label(
+                        hit["path"].rsplit("/", 1)[-1]
+                        + " · 第 "
+                        + str(hit["line"])
+                        + " 行 · "
+                        + hit["skill_id"],
+                        font_size=dp(9),
+                        color=MUTED,
+                        height=dp(18),
+                    )
+                )
+                self.list_layout.add_widget(card)
+            return
+
+        groups = self.library.groups()
+        total = 0
+        for group_name in (
+            "总控",
+            "段派主干",
+            "段派断事",
+            "体用做功",
+            "夏仲奇派",
+            "金口诀",
+            "工具",
+            "其他",
+        ):
+            items = groups.get(group_name)
+            if not items:
+                continue
+            self.list_layout.add_widget(
+                make_label(
+                    group_name + f"（{len(items)}）",
+                    font_size=dp(12.5),
+                    bold=True,
+                    color=GREEN,
+                    height=dp(28),
+                )
+            )
+            for item in items:
+                total += 1
+                card = Card(
+                    orientation="horizontal",
+                    padding=[dp(10), dp(4), dp(8), dp(4)],
+                    spacing=dp(6),
+                    size_hint_y=None,
+                    height=dp(62),
+                    card_color=CARD,
+                    radius=10,
+                )
+                info_box = BoxLayout(
+                    orientation="vertical",
+                    spacing=dp(0),
+                )
+                info_box.add_widget(
+                    make_label(
+                        item["id"],
+                        font_size=dp(13),
+                        bold=True,
+                        color=TEXT,
+                        height=dp(24),
+                    )
+                )
+                info_box.add_widget(
+                    make_label(
+                        item["description"][:46] or item["title"],
+                        font_size=dp(9),
+                        color=MUTED,
+                        height=dp(28),
+                    )
+                )
+                card.add_widget(info_box)
+                open_button = make_button(
+                    "›",
+                    size_hint=(None, None),
+                    size=(dp(28), dp(34)),
+                    font_size=dp(20),
+                    background_color=(0, 0, 0, 0),
+                    color=MUTED,
+                )
+                open_button.bind(
+                    on_release=lambda _btn, sid=item["id"]: (
+                        self.open_skill(sid)
+                    )
+                )
+                card.add_widget(open_button)
+                self.list_layout.add_widget(card)
+        self.count_label.text = f"{total} 个技能"
+
+    def open_skill(self, skill_id):
+        detail = self.manager.get_screen("skill_detail")
+        detail.show_skill(skill_id)
+        self.manager.current = "skill_detail"
+
+
+class SkillDetailScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(16), dp(8), dp(16), dp(8)],
+            spacing=dp(8),
+        )
+        root.add_widget(
+            make_button(
+                "‹ 技能库",
+                size_hint=(None, None),
+                size=(dp(84), dp(34)),
+                font_size=dp(12),
+                background_color=(0.420, 0.450, 0.410, 1),
+                on_release=self.go_back,
+            )
+        )
+        self.title_label = make_label(
+            "技能",
+            font_size=dp(20),
+            bold=True,
+            color=GREEN,
+            height=dp(38),
+        )
+        root.add_widget(self.title_label)
+        self.meta_label = make_label(
+            "",
+            font_size=dp(9.5),
+            color=MUTED,
+            height=dp(22),
+        )
+        root.add_widget(self.meta_label)
+        card = Card(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(2),
+        )
+        self.body_text = make_label(
+            "",
+            valign="top",
+            font_size=dp(11),
+            size_hint_y=None,
+            height=dp(600),
+        )
+        scroll = ScrollView(do_scroll_x=False)
+        scroll.add_widget(self.body_text)
+        card.add_widget(scroll)
+        root.add_widget(card)
+        self.add_widget(root)
+        self._current_id = None
+
+    def show_skill(self, skill_id):
+        self._current_id = skill_id
+        try:
+            library = get_library()
+            library.load()
+            item = library.get_skill(skill_id)
+        except Exception as exc:
+            self.title_label.text = "读取失败"
+            self.meta_label.text = str(exc)
+            self.body_text.text = ""
+            return
+        if item is None:
+            self.title_label.text = "未找到技能"
+            self.meta_label.text = skill_id
+            self.body_text.text = ""
+            return
+        self.title_label.text = item["id"]
+        self.meta_label.text = (
+            item["group"]
+            + " · "
+            + str(item["length"])
+            + " 字"
+        )
+        self.body_text.text = item["body"] or item["text"]
+        self.body_text.texture_update()
+        self.body_text.height = max(
+            dp(600),
+            self.body_text.texture_size[1] + dp(30),
+        )
+
+    def go_back(self, *_):
+        self.manager.current = "skills"
 
 
 # ============================================================
@@ -2122,6 +2531,8 @@ class WuxingApp(App):
         manager = ScreenManager()
         manager.add_widget(HomeScreen(name="home"))
         manager.add_widget(SettingsScreen(name="settings"))
+        manager.add_widget(SkillsScreen(name="skills"))
+        manager.add_widget(SkillDetailScreen(name="skill_detail"))
         manager.add_widget(AddScreen(name="add"))
         manager.add_widget(DetailScreen(name="detail"))
         return manager
