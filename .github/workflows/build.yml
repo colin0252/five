@@ -32,7 +32,15 @@ jobs:
           if [ -s skills.zip ]; then
             echo "使用仓库中的 skills.zip"
           else
-            echo "仓库中没有 skills.zip，尝试自动下载……"
+            # 用户直接上传了官方压缩包也可以，文件名不限（带 panshu / skillpack / skills 即可）
+            FOUND=$(find . -maxdepth 1 -type f -name '*.zip' \( -iname '*panshu*' -o -iname '*skillpack*' -o -iname '*skills*' -o -iname '*盘叔盲派*' \) | head -n 1)
+            if [ -n "$FOUND" ]; then
+              echo "发现仓库里的压缩包：$FOUND，直接用作战能库"
+              cp "$FOUND" skills.zip
+            fi
+          fi
+          if [ ! -s skills.zip ]; then
+            echo "仓库中没有可用的压缩包，尝试自动下载……"
             rm -f "$GITHUB_WORKSPACE/skills.zip"
             URLS=(
               "https://github.com/watchkd/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
@@ -193,6 +201,22 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
+
+      # ---------- 把 skills.zip 直接塞进 .app（不依赖 Xcode 工程是否引用） ----------
+      - name: Inject skills.zip into app bundle
+        run: |
+          set -e
+          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+          test -d "$APP_PATH"
+          test -s "$GITHUB_WORKSPACE/skills.zip"
+          cp "$GITHUB_WORKSPACE/skills.zip" "$APP_PATH/skills.zip"
+          MAIN_PY=$(find "$APP_PATH" -name main.py | head -n 1)
+          if [ -n "$MAIN_PY" ]; then
+            cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$MAIN_PY")/skills.zip"
+            echo "skills.zip 已放入：$(dirname "$MAIN_PY")"
+          fi
+          echo "skills.zip 已放入：$APP_PATH"
+          ls -lh "$APP_PATH/skills.zip"
 
       # ---------- 定位权限 ----------
       - name: Configure location permission
