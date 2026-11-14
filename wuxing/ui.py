@@ -757,23 +757,22 @@ class HomeScreen(Screen):
         self.location_error = None
         self.update_location_hint()
 
-        def callback(timezone_name, error):
+        def callback(tz_value, error):
             def apply_result(_dt):
-                nonlocal timezone_name
                 self._timezone_requesting = False
-                if error or not timezone_name:
+                if error or not tz_value:
                     self.location_error = (
                         "获取时区失败："
                         + str(error or "服务没有返回时区")
                     )
                     self.update_location_hint()
                     return
-                timezone_name = str(timezone_name).strip()
-                if safe_zone(timezone_name) is None:
+                tz_text = str(tz_value).strip()
+                if safe_zone(tz_text) is None:
                     self.location_error = (
                         "已收到时区名称，"
                         "但本机时区数据库不可用："
-                        + timezone_name
+                        + tz_text
                     )
                     self.update_location_hint()
                     return
@@ -789,7 +788,7 @@ class HomeScreen(Screen):
                     ) > 0.0001
                 ):
                     return
-                self.timezone_name = timezone_name
+                self.timezone_name = tz_text
                 try:
                     self.save_location()
                 except Exception as exc:
@@ -1410,7 +1409,9 @@ class HomeScreen(Screen):
             print(f"[Storage] 保存星标失败：{exc}")
         self.refresh_list()
 
-    def on_icon_action(self, title, action):
+    def on_icon_action(self, title, action, *_args):
+        if not isinstance(action, str):
+            return
         if action == "diary":
             self.manager.current = "diary"
             return
@@ -3926,16 +3927,16 @@ class MoreScreen(Screen):
                     height=dp(30),
                 )
             )
-            button = make_button(
+            arrow = make_button(
                 "›",
                 size_hint=(None, None),
                 size=(dp(30), dp(30)),
                 font_size=dp(16),
                 background_color=(0.900, 0.890, 0.860, 1),
                 color=MUTED,
-                on_release=lambda a=action: self.open_item(a),
+                on_release=lambda _btn, a=action: self.open_item(a),
             )
-            row.add_widget(button)
+            row.add_widget(arrow)
             content.add_widget(row)
 
         content.add_widget(Widget(size_hint_y=None, height=dp(10)))
@@ -3946,9 +3947,11 @@ class MoreScreen(Screen):
     def go_back(self, *_):
         self.manager.current = "home"
 
-    def open_item(self, action):
-        if action == "skills":
-            self.manager.current = "skills"
+    def open_item(self, action, *_args):
+        # 按钮回调可能把按钮实例传进来，这里只接受字符串
+        if not isinstance(action, str):
+            return
+        if action not in ("skills", "tags", "diary", "settings", "more"):
             return
         self.manager.current = action
 
