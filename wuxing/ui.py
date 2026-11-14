@@ -41,6 +41,11 @@ try:
 except Exception:
     ai_module = None
 
+try:
+    from .qimen import build_qimen
+except Exception:
+    build_qimen = None
+
 
 # ============================================================
 # 颜色与字体
@@ -1389,6 +1394,9 @@ class HomeScreen(Screen):
             return
         if action == "tags":
             self.manager.current = "tags"
+            return
+        if action == "qimen":
+            self.manager.current = "qimen"
             return
         self.show_placeholder(title)
 
@@ -3416,6 +3424,251 @@ class DetailScreen(Screen):
 
 
 # ============================================================
+# 奇门遁甲
+# ============================================================
+QIMEN_ORDER = [4, 9, 2, 3, 5, 7, 8, 1, 6]
+
+
+def make_qimen_cell(item):
+    """画一个奇门宫位格子。"""
+    card = Card(
+        orientation="vertical",
+        padding=[dp(5), dp(4), dp(5), dp(4)],
+        spacing=dp(1),
+        size_hint_y=None,
+        height=dp(88),
+        card_color=CARD,
+        radius=10,
+    )
+    god = item.get("god") or ""
+    card.add_widget(
+        make_label(
+            god,
+            font_size=dp(9),
+            color=GOLD,
+            halign="center",
+            height=dp(14),
+        )
+    )
+    star = item.get("star") or ""
+    door = item.get("door") or ""
+    middle = " ".join(part for part in (star, door) if part)
+    card.add_widget(
+        make_label(
+            middle,
+            font_size=dp(10),
+            bold=True,
+            color=GREEN,
+            halign="center",
+            height=dp(18),
+        )
+    )
+    gan_row = BoxLayout(
+        orientation="horizontal",
+        size_hint_y=None,
+        height=dp(22),
+    )
+    tian = item.get("tian_gan") or ""
+    di = item.get("di_gan") or ""
+    if tian:
+        gan_row.add_widget(
+            make_label(
+                tian,
+                font_size=dp(13),
+                bold=True,
+                color=elem_color(tian),
+                halign="center",
+                height=dp(22),
+            )
+        )
+        gan_row.add_widget(
+            make_label(
+                "／",
+                font_size=dp(9),
+                color=MUTED,
+                halign="center",
+                height=dp(22),
+            )
+        )
+    gan_row.add_widget(
+        make_label(
+            di,
+            font_size=dp(13),
+            bold=True,
+            color=elem_color(di),
+            halign="center",
+            height=dp(22),
+        )
+    )
+    card.add_widget(gan_row)
+    card.add_widget(
+        make_label(
+            (item.get("name") or "") + "宫",
+            font_size=dp(8),
+            color=MUTED,
+            halign="center",
+            height=dp(12),
+        )
+    )
+    return card
+
+
+class QimenScreen(Screen):
+    """时家奇门（转盘）九宫盘。"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._request_id = 0
+        root = BoxLayout(
+            orientation="vertical",
+            padding=[dp(14), dp(8), dp(14), dp(8)],
+            spacing=dp(6),
+        )
+
+        top = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=dp(44),
+            spacing=dp(10),
+        )
+        top.add_widget(
+            make_button(
+                "‹ 首页",
+                size_hint=(None, None),
+                size=(dp(74), dp(34)),
+                font_size=dp(12),
+                background_color=(0.420, 0.450, 0.410, 1),
+                on_release=self.go_back,
+            )
+        )
+        top.add_widget(
+            make_label(
+                "奇门遁甲",
+                font_size=dp(22),
+                bold=True,
+                color=GREEN,
+                height=dp(40),
+            )
+        )
+        root.add_widget(top)
+
+        self.time_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            height=dp(20),
+        )
+        root.add_widget(self.time_label)
+
+        self.summary_label = make_label(
+            "",
+            font_size=dp(10.5),
+            color=TEXT,
+            height=dp(56),
+        )
+        root.add_widget(self.summary_label)
+
+        self.grid = GridLayout(
+            cols=3,
+            spacing=dp(6),
+            size_hint_y=None,
+            height=dp(280),
+        )
+        root.add_widget(self.grid)
+
+        self.status_label = make_label(
+            "",
+            font_size=dp(9.5),
+            color=ORANGE,
+            height=dp(30),
+        )
+        root.add_widget(self.status_label)
+
+        legend = make_label(
+            "每格：八神 / 九星·八门 / 天盘干／地盘干 / 宫位",
+            font_size=dp(9),
+            color=MUTED,
+            height=dp(20),
+        )
+        root.add_widget(legend)
+        root.add_widget(Widget())
+        self.add_widget(root)
+
+    def on_pre_enter(self, *_):
+        self.refresh()
+
+    def go_back(self, *_):
+        self.manager.current = "home"
+
+    def refresh(self, *_):
+        if build_qimen is None:
+            self.status_label.text = "奇门模块不可用（qimen.py 未上传）"
+            return
+        home = self.manager.get_screen("home")
+        if home.current_latitude is None or home.current_longitude is None:
+            self.status_label.text = "请先在设置里获取定位或设置城市"
+            return
+        zone = safe_zone(home.timezone_name)
+        if zone is None:
+            self.status_label.text = "尚未获取时区，请先在设置里获取定位"
+            return
+        now = datetime.now(zone)
+        self.time_label.text = "排盘时刻：" + now.strftime("%Y-%m-%d %H:%M")
+        self.status_label.text = "正在排盘……"
+        self._request_id += 1
+        request_id = self._request_id
+        latitude = float(home.current_latitude)
+        longitude = float(home.current_longitude)
+        timezone_name = home.timezone_name
+        solar_mode = home.solar_mode
+
+        def work():
+            try:
+                chart = build_chart(
+                    now,
+                    longitude,
+                    "男",
+                    latitude=latitude,
+                    timezone_info=timezone_name,
+                    solar_mode=solar_mode,
+                )
+                result = build_qimen(chart)
+                error = None
+            except Exception as exc:
+                result = None
+                error = f"{type(exc).__name__}: {exc}"
+            Clock.schedule_once(
+                lambda _dt: self.show_result(request_id, result, error),
+                0,
+            )
+
+        Thread(target=work, daemon=True).start()
+
+    def show_result(self, request_id, result, error):
+        if request_id != self._request_id:
+            return
+        self.grid.clear_widgets()
+        if error or result is None:
+            self.summary_label.text = ""
+            self.status_label.text = "排盘失败：" + str(error)
+            return
+        self.summary_label.text = (
+            f"{result['ju_text']}　{result['jieqi']}·{result['yuan_name']}\n"
+            f"旬首 {result['xun']}（{result['xun_yi']}）　旬空 {result['xun_kong']}\n"
+            f"值符 {result['zhi_fu']}　值使 {result['zhi_shi']}　"
+            f"时柱 {result['hour_gz']}"
+        )
+        palaces = {item["gong"]: item for item in result["palaces"]}
+        for gong in QIMEN_ORDER:
+            item = palaces.get(gong)
+            if item is None:
+                self.grid.add_widget(Widget())
+            else:
+                self.grid.add_widget(make_qimen_cell(item))
+        self.status_label.text = ""
+
+
+# ============================================================
 # 应用入口
 # ============================================================
 class WuxingApp(App):
@@ -3432,4 +3685,5 @@ class WuxingApp(App):
         manager.add_widget(SkillDetailScreen(name="skill_detail"))
         manager.add_widget(AddScreen(name="add"))
         manager.add_widget(DetailScreen(name="detail"))
+        manager.add_widget(QimenScreen(name="qimen"))
         return manager
