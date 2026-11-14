@@ -23,9 +23,11 @@
     错误  非 200，body 里带 {"error": "..."}
 """
 
+import http.client
 import json
 import os
 import ssl
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -259,27 +261,56 @@ def build_messages(
 # ============================================================
 # 网络请求
 # ============================================================
-def _post_json(url, payload, headers, timeout):
+def _post_json(url, payload, headers, timeout, retries=3):
+    """POST 一个 JSON，失败自动重试。
+
+    iPhone 上偶尔会出现 http.client.IncompleteRead（连接被中途掐断），
+    或者 SSL 握手超时。这类错误重试一两次基本都能成功，所以内建重试，
+    避免用户手动反复点「重新解读」。
+    """
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers=headers,
-        method="POST",
-    )
-    with urllib.request.urlopen(
-        request,
-        timeout=timeout,
-        context=_ssl_context(),
-    ) as response:
-        raw = response.read()
-    text = raw.decode("utf-8", "ignore")
-    try:
-        return json.loads(text)
-    except Exception as exc:
-        raise AIError(
-            "中转服务返回的不是 JSON：" + text[:200]
-        ) from exc
+    last_error = None
+    for attempt in range(1, retries + 1):
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=timeout,
+                context=_ssl_context(),
+            ) as response:
+                raw = response.read()
+            text = raw.decode("utf-8", "ignore")
+            try:
+                return json.loads(text)
+            except Exception as exc:
+                raise AIError(
+                    "中转服务返回的不是 JSON：" + text[:200]
+                ) from exc
+        except urllib.error.HTTPError:
+            # 带状态码的错误交给上层处理（401/429/403 等），不重试
+            raise
+        except http.client.IncompleteRead as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(1.2 * attempt)
+                continue
+            raise AIError(
+                "网络传输中途断开（IncompleteRead），已自动重试 "
+                f"{retries} 次仍失败，请稍后再试。"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(1.2 * attempt)
+                continue
+            raise
+    if last_error is not None:
+        raise AIError("网络请求失败：" + str(last_error))
 
 
 def _extract_text(data):
@@ -333,6 +364,8 @@ def call_relay(config, messages, timeout=DEFAULT_TIMEOUT):
             "Version/17.0 Mobile/15E148 Safari/604.1"
         ),
         "Accept-Language": "zh-CN,zh;q=0.9",
+        # 禁用长连接，避免 iOS 上复用到已被服务端关闭的连接
+        "Connection": "close",
     }
     if token:
         headers["Authorization"] = "Bearer " + token
