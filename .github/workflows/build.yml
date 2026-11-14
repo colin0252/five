@@ -226,13 +226,17 @@ jobs:
           rm -rf "$PROJECT_DIR"
           toolchain create colin-app "$GITHUB_WORKSPACE"
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
+          echo "=== 工程目录结构（前 60 个） ==="
+          find "$PROJECT_DIR" -maxdepth 3 -type d | head -60
           if [ -s "$GITHUB_WORKSPACE/skills.zip" ]; then
-            MAIN_PY=$(find "$PROJECT_DIR" -maxdepth 4 -name main.py | head -n 1)
-            if [ -z "$MAIN_PY" ]; then
-              echo "ERROR: 找不到 main.py"; exit 1
+            # 不依赖 main.py 的路径：直接找 wuxing 包所在目录，把 zip 放到它旁边
+            APP_SRC=$(find "$PROJECT_DIR" -maxdepth 6 -type d -name wuxing | head -n 1)
+            if [ -n "$APP_SRC" ]; then
+              cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$APP_SRC")/skills.zip"
+              echo "skills.zip 已放到：$(dirname "$APP_SRC")"
+            else
+              echo "WARNING: 工程里没找到 wuxing 目录，改由打包后直接塞进 .app"
             fi
-            cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$MAIN_PY")/skills.zip"
-            echo "skills.zip 已放到：$(dirname "$MAIN_PY")"
           fi
           echo "=== app resources ==="
           find "$PROJECT_DIR" \( -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf' -o -name 'skills.zip' \) -print
@@ -263,12 +267,18 @@ jobs:
           APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
           test -d "$APP_PATH"
           test -s "$GITHUB_WORKSPACE/skills.zip"
-          cp "$GITHUB_WORKSPACE/skills.zip" "$APP_PATH/skills.zip"
-          MAIN_PY=$(find "$APP_PATH" -name main.py | head -n 1)
-          if [ -n "$MAIN_PY" ]; then
-            cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$MAIN_PY")/skills.zip"
-            echo "skills.zip 已放入：$(dirname "$MAIN_PY")"
+          echo "=== .app 目录结构（前 40 个） ==="
+          find "$APP_PATH" -maxdepth 3 -type d | head -40
+          # skills.py 的 root_dir 就是 wuxing 的上一层，所以 zip 必须放在 wuxing 旁边
+          APP_SRC=$(find "$APP_PATH" -maxdepth 5 -type d -name wuxing | head -n 1)
+          if [ -n "$APP_SRC" ]; then
+            cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$APP_SRC")/skills.zip"
+            echo "skills.zip 已放入：$(dirname "$APP_SRC")"
+          else
+            echo "WARNING: .app 里没找到 wuxing 目录"
           fi
+          # 再放一份到 .app 根目录兜底
+          cp "$GITHUB_WORKSPACE/skills.zip" "$APP_PATH/skills.zip"
           echo "skills.zip 已放入：$APP_PATH"
           ls -lh "$APP_PATH/skills.zip"
 
@@ -302,10 +312,16 @@ jobs:
           if ! find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' -print -quit | grep -q .; then
             echo "ERROR: Chinese font missing"; exit 1
           fi
-          if ! find "$APP_PATH" -name 'skills.zip' -print -quit | grep -q .; then
-            echo "ERROR: skills.zip missing，App 内技能库将为空"
+          APP_SRC=$(find "$APP_PATH" -maxdepth 5 -type d -name wuxing | head -n 1)
+          if [ -z "$APP_SRC" ]; then
+            echo "ERROR: .app 里没有 wuxing 模块目录"
             exit 1
           fi
+          if [ ! -s "$(dirname "$APP_SRC")/skills.zip" ]; then
+            echo "ERROR: skills.zip 没有放到 wuxing 旁边，App 内技能库将为空"
+            exit 1
+          fi
+          ls -lh "$(dirname "$APP_SRC")/skills.zip"
 
       # ---------- 打包并上传 ----------
       - name: Package IPA
