@@ -103,6 +103,16 @@ def make_button(text, **kwargs):
     return Button(text=text, **kwargs)
 
 
+def section_title(text):
+    return make_label(
+        text,
+        font_size=dp(13),
+        bold=True,
+        color=GREEN,
+        height=dp(26),
+    )
+
+
 def make_input(**kwargs):
     kwargs.setdefault("font_size", dp(16))
     kwargs.setdefault("size_hint_y", None)
@@ -1001,15 +1011,6 @@ class HomeScreen(Screen):
                 ),
                 0.3,
             )
-        if (
-            self.current_latitude is None
-            or self.current_longitude is None
-        ):
-            Clock.schedule_once(
-                lambda _dt: self.request_location(),
-                0.5,
-            )
-
     def on_leave(self, *_):
         if self._clock_event is not None:
             self._clock_event.cancel()
@@ -1554,7 +1555,7 @@ class AddScreen(Screen):
             padding=dp(14),
             spacing=dp(6),
             size_hint_y=None,
-            height=dp(300),
+            height=dp(322),
         )
         form_card.add_widget(
             make_label("名字", font_size=dp(12.5), bold=True, color=GREEN, height=dp(24))
@@ -1694,22 +1695,20 @@ class DetailScreen(Screen):
             height=dp(24),
         )
         root.add_widget(self.time_label)
-        detail_card = Card(
+        self.body = BoxLayout(
             orientation="vertical",
-            padding=dp(12),
-            spacing=dp(4),
-        )
-        self.detail_text = make_label(
-            "",
-            valign="top",
-            font_size=dp(12.5),
+            spacing=dp(8),
             size_hint_y=None,
-            height=dp(420),
         )
-        detail_scroll = ScrollView(do_scroll_x=False)
-        detail_scroll.add_widget(self.detail_text)
-        detail_card.add_widget(detail_scroll)
-        root.add_widget(detail_card)
+        self.body.bind(
+            minimum_height=self.body.setter("height")
+        )
+        detail_scroll = ScrollView(
+            do_scroll_x=False,
+            bar_width=dp(2),
+        )
+        detail_scroll.add_widget(self.body)
+        root.add_widget(detail_scroll)
         self.add_widget(root)
         self._detail_request_id = 0
 
@@ -1733,17 +1732,16 @@ class DetailScreen(Screen):
             timezone_name = home.timezone_name
         self.title_label.text = name
         self.time_label.text = time_text
-        self.detail_text.text = "正在计算排盘结果……"
-        self.detail_text.height = dp(420)
+        self.show_message("正在计算排盘结果……")
         if latitude is None or longitude is None:
-            self.detail_text.text = (
+            self.show_message(
                 "尚未设置有效位置。\n"
                 "请返回首页，获取定位或手动设置城市/地址。"
             )
             return
         zone = safe_zone(timezone_name)
         if zone is None:
-            self.detail_text.text = (
+            self.show_message(
                 "无法确定此时间局的时区。\n"
                 "请返回首页，确认已成功获取地点时区后再试。"
             )
@@ -1773,31 +1771,275 @@ class DetailScreen(Screen):
                     latitude=latitude_value,
                     timezone_info=timezone_name,
                 )
-                result = format_chart(chart, name)
+                error = None
             except Exception as exc:
-                result = (
-                    "排盘计算失败\n"
-                    f"{type(exc).__name__}: {exc}"
-                )
+                chart = None
+                error = f"{type(exc).__name__}: {exc}"
             Clock.schedule_once(
-                lambda _dt: self.set_detail_text(
+                lambda _dt: self.set_detail(
                     request_id,
-                    result,
+                    chart,
+                    error,
                 ),
                 0,
             )
 
         Thread(target=work, daemon=True).start()
 
-    def set_detail_text(self, request_id, text):
+    def show_message(self, text):
+        self.body.clear_widgets()
+        self.body.add_widget(
+            make_label(
+                text,
+                font_size=dp(12.5),
+                color=MUTED,
+                halign="center",
+                height=dp(120),
+            )
+        )
+
+    def set_detail(self, request_id, chart, error):
         if request_id != self._detail_request_id:
             return
-        self.detail_text.text = text
-        self.detail_text.texture_update()
-        self.detail_text.height = max(
-            dp(420),
-            self.detail_text.texture_size[1] + dp(24),
+        if error or chart is None:
+            self.show_message(
+                "排盘计算失败\n" + str(error or "未知错误")
+            )
+            return
+        self.render_detail(chart)
+
+    def render_detail(self, chart):
+        self.body.clear_widgets()
+
+        # 四柱
+        pillars_grid = GridLayout(
+            cols=4,
+            spacing=dp(6),
+            size_hint_y=None,
+            height=dp(168),
         )
+        for name, pillar in get_pillars(chart):
+            cell = Card(
+                orientation="vertical",
+                padding=[dp(2), dp(4), dp(2), dp(4)],
+                spacing=dp(0),
+                card_color=CARD_SOFT,
+                radius=10,
+            )
+            cell.add_widget(
+                make_label(
+                    name + "柱",
+                    font_size=dp(10),
+                    color=MUTED,
+                    halign="center",
+                    height=dp(18),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    pillar.gan,
+                    font_size=dp(27),
+                    bold=True,
+                    color=elem_color(pillar.gan),
+                    halign="center",
+                    height=dp(38),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    pillar.zhi,
+                    font_size=dp(27),
+                    bold=True,
+                    color=elem_color(pillar.zhi),
+                    halign="center",
+                    height=dp(38),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    "日主" if name == "日" else pillar.ten_god_gan,
+                    font_size=dp(9),
+                    color=GREEN,
+                    halign="center",
+                    height=dp(17),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    "藏 " + "".join(pillar.hidden),
+                    font_size=dp(8),
+                    color=MUTED,
+                    halign="center",
+                    height=dp(15),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    pillar.na_yin,
+                    font_size=dp(8),
+                    color=MUTED,
+                    halign="center",
+                    height=dp(15),
+                )
+            )
+            pillars_grid.add_widget(cell)
+        self.body.add_widget(pillars_grid)
+
+        # 基础信息
+        info_card = Card(
+            orientation="vertical",
+            padding=dp(12),
+            spacing=dp(2),
+            size_hint_y=None,
+            height=dp(102),
+            card_color=CARD,
+        )
+        info_card.add_widget(
+            make_label(
+                "排盘时间　" + chart.birth.strftime("%Y-%m-%d %H:%M"),
+                font_size=dp(11.5),
+                color=TEXT,
+                height=dp(24),
+            )
+        )
+        info_card.add_widget(
+            make_label(
+                "真太阳时　" + chart.true_solar.strftime("%Y-%m-%d %H:%M"),
+                font_size=dp(11.5),
+                color=TEXT,
+                height=dp(24),
+            )
+        )
+        info_card.add_widget(
+            make_label(
+                "胎元 " + chart.fetal + "　　命宫 " + chart.life_palace,
+                font_size=dp(11.5),
+                color=TEXT,
+                height=dp(24),
+            )
+        )
+        self.body.add_widget(info_card)
+
+        # 五行统计
+        self.body.add_widget(section_title("五行统计"))
+        wuxing_row = GridLayout(
+            cols=5,
+            spacing=dp(4),
+            size_hint_y=None,
+            height=dp(52),
+        )
+        for element in ("木", "火", "土", "金", "水"):
+            count = chart.wuxing.get(element, 0)
+            cell = Card(
+                orientation="vertical",
+                padding=[dp(1), dp(2), dp(1), dp(2)],
+                spacing=dp(0),
+                card_color=CARD_SOFT,
+                radius=8,
+            )
+            cell.add_widget(
+                make_label(
+                    element,
+                    font_size=dp(12),
+                    bold=True,
+                    color=ELEMENT_COLORS[element],
+                    halign="center",
+                    height=dp(24),
+                )
+            )
+            cell.add_widget(
+                make_label(
+                    str(count),
+                    font_size=dp(11),
+                    color=TEXT,
+                    halign="center",
+                    height=dp(20),
+                )
+            )
+            wuxing_row.add_widget(cell)
+        self.body.add_widget(wuxing_row)
+
+        # 大运
+        self.body.add_widget(section_title("大运"))
+        for item in chart.dayun:
+            gz = str(item.get("干支", ""))
+            row = Card(
+                orientation="horizontal",
+                padding=[dp(10), dp(4), dp(10), dp(4)],
+                spacing=dp(4),
+                size_hint_y=None,
+                height=dp(32),
+                card_color=CARD,
+                radius=8,
+            )
+            row.add_widget(
+                make_label(
+                    f"{item.get('序', '')}",
+                    font_size=dp(9.5),
+                    color=MUTED,
+                    halign="center",
+                    size_hint_x=None,
+                    width=dp(20),
+                    height=dp(24),
+                )
+            )
+            row.add_widget(
+                make_label(
+                    gz[0] if len(gz) > 0 else "",
+                    font_size=dp(13),
+                    bold=True,
+                    color=elem_color(gz[0]) if gz else TEXT,
+                    halign="center",
+                    size_hint_x=None,
+                    width=dp(22),
+                    height=dp(24),
+                )
+            )
+            row.add_widget(
+                make_label(
+                    gz[1] if len(gz) > 1 else "",
+                    font_size=dp(13),
+                    bold=True,
+                    color=elem_color(gz[1]) if len(gz) > 1 else TEXT,
+                    halign="center",
+                    size_hint_x=None,
+                    width=dp(22),
+                    height=dp(24),
+                )
+            )
+            row.add_widget(
+                make_label(
+                    f"{item.get('起运岁', '')}岁起运 · {item.get('顺逆', '')}行",
+                    font_size=dp(9.5),
+                    color=MUTED,
+                    height=dp(24),
+                )
+            )
+            self.body.add_widget(row)
+
+        # 提示
+        if chart.warnings:
+            self.body.add_widget(section_title("注意事项"))
+            warning_card = Card(
+                orientation="vertical",
+                padding=dp(12),
+                spacing=dp(1),
+                size_hint_y=None,
+                height=dp(26 + 22 * len(chart.warnings)),
+                card_color=CARD,
+            )
+            for warning in chart.warnings:
+                warning_card.add_widget(
+                    make_label(
+                        "• " + warning,
+                        font_size=dp(10.5),
+                        color=ORANGE,
+                        height=dp(22),
+                    )
+                )
+            self.body.add_widget(warning_card)
+
+        self.body.add_widget(Widget(size_hint_y=None, height=dp(8)))
 
     def go_back(self, *_):
         self.manager.current = "home"
