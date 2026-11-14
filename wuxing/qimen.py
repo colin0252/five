@@ -238,12 +238,19 @@ def _build_di_pan(ju, yang):
 # ------------------------------------------------------------
 # 主函数
 # ------------------------------------------------------------
-def build_qimen(chart):
-    """根据 paipan.Chart 排一张时家奇门盘。"""
+def build_qimen(chart, moment=None):
+    """根据 paipan.Chart 排一张时家奇门盘。
+
+    chart.birth 是不带时区的当地钟表时间，所以定局必须另外传入
+    带时区的时刻 moment；不传时退回 chart.birth（可能报错）。
+    """
     if chart is None or not getattr(chart, "hour", None):
         raise QimenError("缺少四柱信息，无法排奇门盘。")
 
-    moment = chart.birth
+    if moment is None:
+        moment = getattr(chart, "birth", None)
+    if moment is None:
+        raise QimenError("缺少排盘时刻。")
     if moment.tzinfo is None:
         raise QimenError("排盘时刻必须带时区。")
 
@@ -372,6 +379,25 @@ def _number_cn(number):
     if 0 <= number <= 9:
         return names[number]
     return str(number)
+
+
+def build_from_values(
+    moment, latitude, longitude, timezone_name, solar_mode="mean", sex="男"
+):
+    """给界面用的便捷入口：自己传时刻和经纬度，直接排奇门盘。"""
+    from .paipan import build_chart
+
+    if moment.tzinfo is None:
+        raise QimenError("排盘时刻必须带时区。")
+    chart = build_chart(
+        moment,
+        float(longitude),
+        sex,
+        latitude=float(latitude),
+        timezone_info=timezone_name,
+        solar_mode=solar_mode,
+    )
+    return build_qimen(chart, moment=moment)
 
 
 def summary(result):
