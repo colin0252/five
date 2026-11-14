@@ -1,4 +1,5 @@
 name: iOS Build
+
 # 任何分支的提交都会自动触发；也可以在 Actions 页面手动运行
 on:
   push:
@@ -10,17 +11,57 @@ permissions:
   contents: read
 
 env:
+  # 需要强制重建缓存时，把 v1 改成 v2
   CACHE_VERSION: v1
 
 jobs:
   build:
+    # macos-latest 是 arm64 池，容量极度拥堵（排队 15 分钟后被取消）
+    # macos-15-intel 是独立的 Intel 池，可以绕开拥堵
     runs-on: macos-15-intel
     timeout-minutes: 180
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 字体与星历 ----------
+      # ---------- 技能库：优先用仓库里的 skills.zip，没有就自动下载 ----------
+      - name: Prepare skills.zip
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          if [ -s skills.zip ]; then
+            echo "使用仓库中的 skills.zip"
+          else
+            echo "仓库中没有 skills.zip，尝试自动下载……"
+            URLS=(
+              "https://gitcode.com/colin0252/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
+              "https://gitcode.com/colin0252/panshu-mangpai-skillpack/repository/archive/main.zip"
+              "https://github.com/colin0252/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
+            )
+            ok=0
+            for u in "${URLS[@]}"; do
+              echo "尝试：$u"
+              rm -f raw.zip
+              if curl -fL --connect-timeout 20 --max-time 240 -o raw.zip "$u"; then
+                if [ -s raw.zip ] && unzip -l raw.zip >/dev/null 2>&1; then
+                  mv raw.zip skills.zip
+                  ok=1
+                  echo "下载成功：$u"
+                  break
+                fi
+              fi
+            done
+            rm -f raw.zip
+            if [ "$ok" != "1" ]; then
+              echo "WARNING: 技能库自动下载失败，本次构建将不包含技能库"
+            fi
+          fi
+          if [ -s skills.zip ]; then
+            ls -lh skills.zip
+            unzip -l skills.zip | grep -c 'SKILL.md' || true
+          fi
+
+      # ---------- 字体与星历（有缓存就不再下载） ----------
       - name: Cache font and ephemeris
         id: appres
         uses: actions/cache@v4
@@ -66,7 +107,7 @@ jobs:
           python -m pip show kivy-ios
           which toolchain
 
-      # ---------- kivy-ios 编译 ----------
+      # ---------- kivy-ios 编译（缓存命中会自动跳过已编译的部分） ----------
       - name: Cache kivy-ios toolchain
         uses: actions/cache@v4
         with:
@@ -106,8 +147,16 @@ jobs:
           rm -rf "$PROJECT_DIR"
           toolchain create colin-app "$GITHUB_WORKSPACE"
           test -f "$PROJECT_DIR/colin-app.xcodeproj/project.pbxproj"
+          if [ -s "$GITHUB_WORKSPACE/skills.zip" ]; then
+            MAIN_PY=$(find "$PROJECT_DIR" -maxdepth 4 -name main.py | head -n 1)
+            if [ -z "$MAIN_PY" ]; then
+              echo "ERROR: 找不到 main.py"; exit 1
+            fi
+            cp "$GITHUB_WORKSPACE/skills.zip" "$(dirname "$MAIN_PY")/skills.zip"
+            echo "skills.zip 已放到：$(dirname "$MAIN_PY")"
+          fi
           echo "=== app resources ==="
-          find "$PROJECT_DIR" \( -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf' \) -print
+          find "$PROJECT_DIR" \( -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf' -o -name 'skills.zip' \) -print
 
       # ---------- 编译 ----------
       - name: Build iOS app
@@ -128,34 +177,22 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PROJECT_DIR/build"
 
-      # ---------- Info.plist：定位权限 + 文件共享（便于导出日志） ----------
-      - name: Configure Info.plist
+      # ---------- 定位权限 ----------
+      - name: Configure location permission
         run: |
           set -e
           APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
           INFO_PLIST="$APP_PATH/Info.plist"
           test -f "$INFO_PLIST"
-
           if /usr/libexec/PlistBuddy -c "Print :NSLocationWhenInUseUsageDescription" "$INFO_PLIST" >/dev/null 2>&1; then
             /usr/libexec/PlistBuddy -c "Set :NSLocationWhenInUseUsageDescription 用于获取您所在位置的经纬度，以计算真太阳时" "$INFO_PLIST"
           else
             /usr/libexec/PlistBuddy -c "Add :NSLocationWhenInUseUsageDescription string 用于获取您所在位置的经纬度，以计算真太阳时" "$INFO_PLIST"
           fi
-
-          for KEY in UIFileSharingEnabled LSSupportsOpeningDocumentsInPlace; do
-            if /usr/libexec/PlistBuddy -c "Print :$KEY" "$INFO_PLIST" >/dev/null 2>&1; then
-              /usr/libexec/PlistBuddy -c "Set :$KEY true" "$INFO_PLIST"
-            else
-              /usr/libexec/PlistBuddy -c "Add :$KEY bool true" "$INFO_PLIST"
-            fi
-          done
-
           /usr/libexec/PlistBuddy -c "Print :NSLocationWhenInUseUsageDescription" "$INFO_PLIST"
-          /usr/libexec/PlistBuddy -c "Print :UIFileSharingEnabled" "$INFO_PLIST"
-          /usr/libexec/PlistBuddy -c "Print :LSSupportsOpeningDocumentsInPlace" "$INFO_PLIST"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST"
 
-      # ---------- 检查资源 ----------
+      # ---------- 检查资源是否进包 ----------
       - name: Verify app resources
         run: |
           set -e
@@ -163,14 +200,18 @@ jobs:
           test -d "$APP_PATH"
           find "$APP_PATH" -name 'de421.bsp' -print
           find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' -print
+          find "$APP_PATH" -name 'skills.zip' -print
           if ! find "$APP_PATH" -name 'de421.bsp' -print -quit | grep -q .; then
             echo "ERROR: de421.bsp missing"; exit 1
           fi
           if ! find "$APP_PATH" -name 'NotoSansSC-Regular.ttf' -print -quit | grep -q .; then
             echo "ERROR: Chinese font missing"; exit 1
           fi
+          if ! find "$APP_PATH" -name 'skills.zip' -print -quit | grep -q .; then
+            echo "WARNING: skills.zip missing，App 内技能库将为空"
+          fi
 
-      # ---------- 打包 ----------
+      # ---------- 打包并上传 ----------
       - name: Package IPA
         run: |
           set -e
