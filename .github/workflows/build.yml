@@ -25,61 +25,120 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 技能库：优先用仓库里的 skills.zip，没有就自动下载 ----------
+      # ---------- Python 环境（提前，后面要用 python3 重新打压缩包） ----------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ---------- 技能库：优先用仓库里的压缩包，没有就自动下载 ----------
+      # 注意：不能用 unzip 解压。GitHub/ GitCode 打的 zipball 里中文文件名
+      # 不带 UTF-8 标记，macOS 的 unzip 会报 Illegal byte sequence 然后直接失败。
+      # 这里用 Python 的 zipfile 把文件名按 cp437→utf-8 还原，重新打一个干净的包。
       - name: Prepare skills.zip
         run: |
+          set -e
           cd "$GITHUB_WORKSPACE"
+          rm -f raw.zip
           if [ -s skills.zip ]; then
             echo "使用仓库中的 skills.zip"
           else
             # 用户直接上传了官方压缩包也可以，文件名不限（带 panshu / skillpack / skills 即可）
             FOUND=$(find . -maxdepth 1 -type f -name '*.zip' \( -iname '*panshu*' -o -iname '*skillpack*' -o -iname '*skills*' -o -iname '*盘叔盲派*' \) | head -n 1)
             if [ -n "$FOUND" ]; then
-              echo "发现仓库里的压缩包：$FOUND，直接用作战能库"
-              cp "$FOUND" skills.zip
+              echo "发现仓库里的压缩包：$FOUND"
+              cp "$FOUND" raw.zip
             fi
           fi
-          if [ ! -s skills.zip ]; then
+          if [ ! -s skills.zip ] && [ ! -s raw.zip ]; then
             echo "仓库中没有可用的压缩包，尝试自动下载……"
-            rm -f "$GITHUB_WORKSPACE/skills.zip"
-            URLS=(
-              "https://github.com/watchkd/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
-              "https://github.com/x3747991-ship-it/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
+            for u in \
+              "https://github.com/watchkd/panshu-mangpai-skillpack/archive/refs/heads/main.zip" \
+              "https://github.com/x3747991-ship-it/panshu-mangpai-skillpack/archive/refs/heads/main.zip" \
               "https://gitcode.com/colin0252/panshu-mangpai-skillpack/archive/refs/heads/main.zip"
-            )
-            ok=0
-            for u in "${URLS[@]}"; do
+            do
               echo "尝试：$u"
-              rm -rf raw.zip unpacked
+              rm -f raw.zip
               if curl -fL --retry 3 --connect-timeout 20 --max-time 300 -o raw.zip "$u"; then
-                if [ -s raw.zip ] && unzip -t raw.zip >/dev/null 2>&1; then
-                  mkdir -p unpacked
-                  unzip -q raw.zip -d unpacked
-                  SKILL_DIR=$(find unpacked -maxdepth 3 -type d -name "盘叔盲派" | head -n 1)
-                  if [ -n "$SKILL_DIR" ]; then
-                    (
-                      cd "$(dirname "$SKILL_DIR")"
-                      zip -qr "$GITHUB_WORKSPACE/skills.zip" "盘叔盲派" -x "*/_溯源/*" "*/__pycache__/*"
-                    )
-                    ok=1
-                    echo "打包成功：$u"
-                    break
-                  fi
+                if [ -s raw.zip ]; then
+                  break
                 fi
               fi
             done
-            rm -rf raw.zip unpacked
-            if [ "$ok" != "1" ]; then
+          fi
+          if [ -s skills.zip ]; then
+            echo "已有 skills.zip，跳过重新打包"
+          else
+            if [ ! -s raw.zip ]; then
               echo "ERROR: 技能库下载失败，三个地址都不可用"
               exit 1
             fi
+            python3 - <<'PY'
+          import sys
+          import zipfile
+
+          SOURCE = "raw.zip"
+          TARGET = "skills.zip"
+          FOLDER = "盘叔盲派"
+
+
+          def real_name(info):
+              name = info.filename
+              if getattr(info, "flag_bits", 0) & 0x800:
+                  return name
+              try:
+                  return name.encode("cp437").decode("utf-8")
+              except Exception:
+                  return name
+
+
+          with zipfile.ZipFile(SOURCE) as src:
+              entries = []
+              for info in src.infolist():
+                  if info.is_dir():
+                      continue
+                  entries.append((real_name(info), info))
+
+              root = None
+              for name, _info in entries:
+                  parts = name.split("/")
+                  if FOLDER in parts:
+                      root = "/".join(parts[: parts.index(FOLDER) + 1])
+                      break
+              if not root:
+                  print("ERROR: 压缩包里找不到「盘叔盲派」目录")
+                  sys.exit(1)
+
+              prefix = root + "/"
+              count = 0
+              with zipfile.ZipFile(
+                  TARGET, "w", zipfile.ZIP_DEFLATED
+              ) as dst:
+                  for name, info in entries:
+                      if not name.startswith(prefix):
+                          continue
+                      rel = name[len(prefix):]
+                      if not rel or "_溯源/" in rel or "__pycache__" in rel:
+                          continue
+                      try:
+                          data = src.read(info)
+                      except Exception:
+                          continue
+                      dst.writestr(FOLDER + "/" + rel, data)
+                      count += 1
+              print("打包文件数：%d" % count)
+              if count < 50:
+                  print("ERROR: 打包文件太少")
+                  sys.exit(1)
+          PY
           fi
+          rm -f raw.zip
           if [ ! -s skills.zip ]; then
             echo "ERROR: 没有生成 skills.zip"
             exit 1
           fi
           ls -lh skills.zip
-          COUNT=$(unzip -l skills.zip | grep -c 'SKILL.md' || true)
+          COUNT=$(python3 -c "import zipfile;print(sum(1 for n in zipfile.ZipFile('skills.zip').namelist() if n.endswith('SKILL.md')))")
           echo "SKILL.md 数量：$COUNT"
           if [ "$COUNT" -lt 20 ]; then
             echo "ERROR: skills.zip 里只有 $COUNT 个 SKILL.md，明显不对"
@@ -107,12 +166,7 @@ jobs:
           test -s ephemeris/de421.bsp
           ls -lh fonts/NotoSansSC-Regular.ttf ephemeris/de421.bsp
 
-      # ---------- Python 环境 ----------
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # ---------- pip 缓存 ----------
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -249,7 +303,8 @@ jobs:
             echo "ERROR: Chinese font missing"; exit 1
           fi
           if ! find "$APP_PATH" -name 'skills.zip' -print -quit | grep -q .; then
-            echo "WARNING: skills.zip missing，App 内技能库将为空"
+            echo "ERROR: skills.zip missing，App 内技能库将为空"
+            exit 1
           fi
 
       # ---------- 打包并上传 ----------
