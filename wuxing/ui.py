@@ -41,6 +41,7 @@ try:
 except Exception:
     ai_module = None
 
+
 # ============================================================
 # 颜色与字体
 # ============================================================
@@ -335,9 +336,6 @@ def format_chart(chart, title="时间局"):
         )
 
 
-# ============================================================
-# 首页
-# ============================================================
 class HomeScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1189,7 +1187,7 @@ class HomeScreen(Screen):
                 padding=[dp(8), dp(4), dp(6), dp(4)],
                 spacing=dp(8),
                 size_hint_y=None,
-                height=dp(58),
+                height=dp(66),
                 card_color=CARD,
                 radius=12,
             )
@@ -1225,15 +1223,33 @@ class HomeScreen(Screen):
                     height=dp(28),
                 )
             )
+            tags = item.get("tags", []) or []
+            tag_text = " · ".join(
+                [format_birth_date(time_text)] + [str(tag) for tag in tags[:3]]
+            )
             info.add_widget(
                 make_label(
-                    format_birth_date(time_text),
+                    tag_text,
                     font_size=dp(10.5),
                     color=MUTED,
                     height=dp(18),
                 )
             )
             row.add_widget(info)
+            tag_button = make_button(
+                "#",
+                size_hint=(None, None),
+                size=(dp(24), dp(30)),
+                font_size=dp(15),
+                background_color=(0, 0, 0, 0),
+                color=(GOLD if tags else (0.760, 0.760, 0.740, 1)),
+            )
+            tag_button.bind(
+                on_release=lambda _btn, chart_key=key: (
+                    self.edit_tags(chart_key)
+                )
+            )
+            row.add_widget(tag_button)
             star_button = make_button(
                 "★" if item.get("starred") else "☆",
                 size_hint=(None, None),
@@ -1267,6 +1283,68 @@ class HomeScreen(Screen):
             )
             row.add_widget(open_button)
             self.list_layout.add_widget(row)
+
+    def edit_tags(self, key):
+        item = self.saved_charts.get(key)
+        if not item:
+            return
+        content = BoxLayout(
+            orientation="vertical",
+            padding=dp(14),
+            spacing=dp(8),
+        )
+        content.add_widget(
+            make_label(
+                "给「" + str(item.get("name", "未命名时间局")) + "」添加标签",
+                font_size=dp(12.5),
+                color=TEXT,
+                height=dp(28),
+            )
+        )
+        tag_input = make_input(
+            hint_text="多个标签用空格分隔，例如：朋友 客户",
+            height=dp(40),
+            font_size=dp(12),
+        )
+        tag_input.text = " ".join(item.get("tags", []) or [])
+        content.add_widget(tag_input)
+        message = make_label(
+            "",
+            font_size=dp(10.5),
+            color=MUTED,
+            height=dp(24),
+        )
+        content.add_widget(message)
+        popup = Popup(
+            title="标签",
+            content=content,
+            size_hint=(0.9, 0.5),
+            auto_dismiss=True,
+        )
+
+        def do_save(*_):
+            raw = tag_input.text.strip()
+            tags = []
+            for part in raw.split():
+                part = part.strip().lstrip("#")
+                if part and part not in tags:
+                    tags.append(part)
+            item["tags"] = tags
+            try:
+                self.save_saved_charts()
+            except Exception as exc:
+                message.text = "保存失败：" + str(exc)
+                return
+            self.refresh_list()
+            popup.dismiss()
+
+        save_button = make_button(
+            "保存标签",
+            height=dp(42),
+            on_release=do_save,
+        )
+        content.add_widget(save_button)
+        popup.open()
 
     def toggle_star(self, key):
         item = self.saved_charts.get(key)
@@ -1341,8 +1419,9 @@ class HomeScreen(Screen):
             "location_name": self.location_name,
             "timezone": self.timezone_name,
             "starred": False,
-            "tags": [],
+            "tags": list(getattr(self, "pending_tags", []) or []),
         }
+        self.pending_tags = []
         self.saved_charts[key] = item
         self.save_saved_charts()
         self.refresh_list()
