@@ -246,16 +246,18 @@ jobs:
         run: |
           set -e
           PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
-          ICON_SRC="$GITHUB_WORKSPACE/appicon.png"
           ICON_OUT="$RUNNER_TEMP/appicons"
           rm -rf "$ICON_OUT"
-          mkdir -p "$ICON_OUT"
-          if [ ! -s "$ICON_SRC" ]; then
-            echo "WARNING: 仓库根目录没有 appicon.png，跳过自定义图标"
+          # 文件名不限大小写和格式：appicon.png / appicon.JPG / appicon.jpg / icon.* 都行
+          ICON_SRC=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \( -iname 'appicon.*' -o -iname 'icon.*' -o -iname 'app-icon.*' \) ! -name '*.txt' | head -n 1)
+          if [ -z "$ICON_SRC" ] || [ ! -s "$ICON_SRC" ]; then
+            echo "WARNING: 仓库根目录没有 appicon.png/jpg，跳过自定义图标"
             exit 0
           fi
+          echo "图标源文件：$ICON_SRC"
           sips -g pixelWidth -g pixelHeight "$ICON_SRC" || true
-          make_icon () { sips -z "$2" "$2" "$ICON_SRC" --out "$ICON_OUT/$1" >/dev/null; }
+          mkdir -p "$ICON_OUT"
+          make_icon () { sips -s format png -z "$2" "$2" "$ICON_SRC" --out "$ICON_OUT/$1" >/dev/null; }
           make_icon "Icon-20@2x.png" 40
           make_icon "Icon-20@3x.png" 60
           make_icon "Icon-29@2x.png" 58
@@ -346,6 +348,10 @@ jobs:
           INFO_PLIST="$APP_PATH/Info.plist"
           if [ ! -d "$ICON_OUT" ]; then
             echo "WARNING: 没有生成图标，跳过"
+            exit 0
+          fi
+          if ! ls "$ICON_OUT"/*.png >/dev/null 2>&1; then
+            echo "WARNING: appicons 目录里没有 png，跳过"
             exit 0
           fi
           cp "$ICON_OUT"/*.png "$APP_PATH/"
