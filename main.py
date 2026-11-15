@@ -68,7 +68,6 @@ def _excepthook(exc_type, exc_value, exc_tb):
 
 
 sys.excepthook = _excepthook
-
 _log("=" * 60)
 _log("App 启动")
 _log("Python: " + sys.version.replace("\n", " "))
@@ -80,6 +79,20 @@ except Exception:
     _log("导入 wuxing.ui 失败：")
     _log(traceback.format_exc())
     raise
+
+# 增量补丁：存在就加载，出错不影响 App 启动。
+# 以后要加 ui_2、ui_3，只改下面这个元组。
+PATCH_MODULES = (
+    "wuxing.ui_1",
+)
+for _name in PATCH_MODULES:
+    try:
+        _module = __import__(_name, fromlist=["install"])
+        _module.install()
+        _log("已加载补丁：" + _name)
+    except Exception:
+        _log("加载补丁失败：" + _name)
+        _log(traceback.format_exc())
 
 if __name__ == "__main__":
     try:
