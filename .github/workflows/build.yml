@@ -241,6 +241,61 @@ jobs:
           echo "=== app resources ==="
           find "$PROJECT_DIR" \( -name 'de421.bsp' -o -name 'NotoSansSC-Regular.ttf' -o -name 'skills.zip' \) -print
 
+      # ---------- App 图标：仓库根目录放 appicon.png（1024x1024），自动生成全套尺寸 ----------
+      - name: Prepare app icon
+        run: |
+          set -e
+          PROJECT_DIR="$RUNNER_TEMP/kivy-ios/colin-app-ios"
+          ICON_SRC="$GITHUB_WORKSPACE/appicon.png"
+          ICON_OUT="$RUNNER_TEMP/appicons"
+          rm -rf "$ICON_OUT"
+          mkdir -p "$ICON_OUT"
+          if [ ! -s "$ICON_SRC" ]; then
+            echo "WARNING: 仓库根目录没有 appicon.png，跳过自定义图标"
+            exit 0
+          fi
+          sips -g pixelWidth -g pixelHeight "$ICON_SRC" || true
+          make_icon () { sips -z "$2" "$2" "$ICON_SRC" --out "$ICON_OUT/$1" >/dev/null; }
+          make_icon "Icon-20@2x.png" 40
+          make_icon "Icon-20@3x.png" 60
+          make_icon "Icon-29@2x.png" 58
+          make_icon "Icon-29@3x.png" 87
+          make_icon "Icon-40@2x.png" 80
+          make_icon "Icon-40@3x.png" 120
+          make_icon "Icon-60@2x.png" 120
+          make_icon "Icon-60@3x.png" 180
+          make_icon "Icon-76.png" 76
+          make_icon "Icon-76@2x.png" 152
+          make_icon "Icon-83.5@2x.png" 167
+          make_icon "Icon-1024.png" 1024
+          ls -lh "$ICON_OUT"
+          APPSET=$(find "$PROJECT_DIR" -type d -name 'AppIcon.appiconset' | head -n 1)
+          if [ -n "$APPSET" ]; then
+            cp "$ICON_OUT"/*.png "$APPSET/"
+            cat > "$APPSET/Contents.json" <<'JSON'
+          {
+            "images" : [
+              { "filename" : "Icon-20@2x.png", "idiom" : "iphone", "scale" : "2x", "size" : "20x20" },
+              { "filename" : "Icon-20@3x.png", "idiom" : "iphone", "scale" : "3x", "size" : "20x20" },
+              { "filename" : "Icon-29@2x.png", "idiom" : "iphone", "scale" : "2x", "size" : "29x29" },
+              { "filename" : "Icon-29@3x.png", "idiom" : "iphone", "scale" : "3x", "size" : "29x29" },
+              { "filename" : "Icon-40@2x.png", "idiom" : "iphone", "scale" : "2x", "size" : "40x40" },
+              { "filename" : "Icon-40@3x.png", "idiom" : "iphone", "scale" : "3x", "size" : "40x40" },
+              { "filename" : "Icon-60@2x.png", "idiom" : "iphone", "scale" : "2x", "size" : "60x60" },
+              { "filename" : "Icon-60@3x.png", "idiom" : "iphone", "scale" : "3x", "size" : "60x60" },
+              { "filename" : "Icon-76.png", "idiom" : "ipad", "scale" : "1x", "size" : "76x76" },
+              { "filename" : "Icon-76@2x.png", "idiom" : "ipad", "scale" : "2x", "size" : "76x76" },
+              { "filename" : "Icon-83.5@2x.png", "idiom" : "ipad", "scale" : "2x", "size" : "83.5x83.5" },
+              { "filename" : "Icon-1024.png", "idiom" : "ios-marketing", "scale" : "1x", "size" : "1024x1024" }
+            ],
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          JSON
+            echo "已写入 AppIcon.appiconset：$APPSET"
+          else
+            echo "模板里没有 AppIcon.appiconset，改用 Info.plist 方式"
+          fi
+
       # ---------- 编译 ----------
       - name: Build iOS app
         run: |
@@ -282,6 +337,33 @@ jobs:
           echo "skills.zip 已放入：$APP_PATH"
           ls -lh "$APP_PATH/skills.zip"
 
+      # ---------- App 图标：写进 .app 并改 Info.plist ----------
+      - name: Inject app icon into bundle
+        run: |
+          set -e
+          APP_PATH="$RUNNER_TEMP/kivy-ios/colin-app-ios/build/colin-app.app"
+          ICON_OUT="$RUNNER_TEMP/appicons"
+          INFO_PLIST="$APP_PATH/Info.plist"
+          if [ ! -d "$ICON_OUT" ]; then
+            echo "WARNING: 没有生成图标，跳过"
+            exit 0
+          fi
+          cp "$ICON_OUT"/*.png "$APP_PATH/"
+          ls -lh "$APP_PATH"/Icon-*.png
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleIconFiles" "$INFO_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles array" "$INFO_PLIST"
+          for name in Icon-20 Icon-29 Icon-40 Icon-60 Icon-76 Icon-83.5; do
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles: string $name" "$INFO_PLIST"
+          done
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleIcons" "$INFO_PLIST" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons dict" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "$INFO_PLIST"
+          for name in Icon-20 Icon-29 Icon-40 Icon-60; do
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles: string $name" "$INFO_PLIST"
+          done
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIconFiles" "$INFO_PLIST" || true
+
       # ---------- 定位权限 ----------
       - name: Configure location permission
         run: |
@@ -322,6 +404,9 @@ jobs:
             exit 1
           fi
           ls -lh "$(dirname "$APP_SRC")/skills.zip"
+          echo "=== 图标 ==="
+          ls -1 "$APP_PATH"/Icon-*.png 2>/dev/null | wc -l || true
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIconFiles" "$APP_PATH/Info.plist" || true
 
       # ---------- 打包并上传 ----------
       - name: Package IPA
